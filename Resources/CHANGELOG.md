@@ -1,7 +1,7 @@
 # MarkdownViewer — Changelog
 
 A standalone macOS markdown viewer/editor. This changelog tracks the
-MarkdownViewer app specifically (separate from the parent QLMarkdown project).
+MarkdownViewer app.
 
 ## Unreleased
 

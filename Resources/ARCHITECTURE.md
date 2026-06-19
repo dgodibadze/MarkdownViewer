@@ -64,8 +64,8 @@ provider and model persist in `UserDefaults`.
 
 ## Design choices / trade-offs
 
-- **marked.js, not cmark-gfm**: keeps the app tiny and self-contained; output is
-  GitHub-flavored but not byte-identical to the parent QLMarkdown Quick Look engine.
+- **marked.js, not a native C engine**: keeps the app tiny and self-contained; output is
+  GitHub-flavored and rendered entirely in the WebView.
 - **Everything in one template + one Swift file**: easy to read, build, and audit; no
   package manager, no Xcode project.
 - **In-page UI** (toolbar, find bar, AI chat) lives in HTML/CSS/JS so it themes for free
