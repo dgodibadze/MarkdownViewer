@@ -1,0 +1,4 @@
+MarkdownViewer.app/
+*.dmg
+.DS_Store
+build/

@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<base href="__BASE__">
+<title>__TITLE__</title>
+
+<!-- Pre-paint theme bootstrap: set data-theme before CSS renders to avoid flash. -->
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('theme') || 'system';
+    var resolved = saved;
+    if (saved === 'system') {
+      resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.setAttribute('data-theme', resolved);
+    document.documentElement.setAttribute('data-theme-choice', saved);
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'light');
+    document.documentElement.setAttribute('data-theme-choice', 'system');
+  }
+})();
+</script>
+
+<!-- Bundled markdown + syntax themes (toggled by JS). file:// = offline, no network. -->
+<link rel="stylesheet" id="md-light"   href="__RES__/github-markdown-light.css">
+<link rel="stylesheet" id="md-dark"    href="__RES__/github-markdown-dark.css">
+<link rel="stylesheet" id="hljs-light" href="__RES__/hljs-github-light.css">
+<link rel="stylesheet" id="hljs-dark"  href="__RES__/hljs-github-dark.css">
+
+<style>
+  :root[data-theme="light"] {
+    --bg: #ffffff; --surface: #f6f8fa; --text: #1f2328; --muted: #59636e;
+    --border: #d1d9e0; --accent: #0969da;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1117; --surface: #161b22; --text: #e6edf3; --muted: #9198a1;
+    --border: #30363d; --accent: #4493f8;
+  }
+  html, body {
+    height: 100%; margin: 0; padding: 0; overflow: hidden;
+    background-color: var(--bg); color: var(--text);
+    transition: background-color 180ms ease, color 180ms ease;
+  }
+  body {
+    display: flex; flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* ---- Toolbar ---- */
+  .toolbar {
+    flex: none; display: flex; align-items: center; gap: 12px;
+    padding: 7px 12px; border-bottom: 1px solid var(--border);
+    background: var(--surface); z-index: 50;
+  }
+  .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .segmented button {
+    appearance: none; border: none; background: transparent; color: var(--text);
+    font: inherit; font-size: 13px; padding: 5px 14px; cursor: pointer;
+    border-right: 1px solid var(--border);
+  }
+  .segmented button:last-child { border-right: none; }
+  .segmented button:hover { background: var(--bg); }
+  .segmented button[aria-selected="true"] { background: var(--accent); color: #fff; }
+  .spacer { flex: 1 1 auto; }
+
+  .save-btn {
+    appearance: none; font: inherit; font-size: 13px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 14px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  .save-btn:hover { border-color: var(--accent); }
+  .save-btn:disabled { opacity: .5; cursor: default; }
+  .dirty-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+    display: none;
+  }
+  body[data-dirty="true"] .dirty-dot { display: inline-block; }
+
+  /* ---- Stage: holds the editor/preview workspace and the docked chat panel.
+     Direction changes with the chat dock side so content is squeezed, not covered. ---- */
+  .stage { flex: 1 1 auto; display: flex; min-height: 0; min-width: 0; }
+  body[data-chat-side="right"]  .stage { flex-direction: row; }
+  body[data-chat-side="left"]   .stage { flex-direction: row-reverse; }
+  body[data-chat-side="bottom"] .stage { flex-direction: column; }
+
+  /* ---- Workspace (editor / preview panes) ---- */
+  .workspace { flex: 1 1 auto; display: grid; min-height: 0; min-width: 0; position: relative; }
+  body[data-mode="preview"] .workspace { grid-template-columns: 1fr; }
+  body[data-mode="edit"]    .workspace { grid-template-columns: 1fr; }
+  body[data-mode="split"]   .workspace { grid-template-columns: var(--split, 50%) 10px 1fr; }
+
+  body[data-mode="preview"] .editor  { display: none; }
+  body[data-mode="edit"]    .preview { display: none; }
+
+  /* Draggable splitter between editor and preview (Split mode only). */
+  .gutter { display: none; position: relative; }
+  body[data-mode="split"] .gutter { display: block; cursor: col-resize; }
+  .gutter::after {
+    content: ''; position: absolute; top: 0; bottom: 0; left: 50%;
+    width: 1px; transform: translateX(-50%); background: var(--border);
+  }
+  .gutter:hover::after, body.col-resizing .gutter::after { width: 2px; background: var(--accent); }
+  body.col-resizing { cursor: col-resize; user-select: none; }
+  body.col-resizing .editor, body.col-resizing .preview { pointer-events: none; }
+
+  .editor {
+    box-sizing: border-box; width: 100%; height: 100%; resize: none;
+    border: none; outline: none; overflow: auto;
+    padding: 24px 28px; border-right: 1px solid transparent;
+    background: var(--bg); color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13.5px; line-height: 1.6; tab-size: 2;
+  }
+  body[data-mode="split"] .editor { border-right: none; }
+
+  .preview { overflow: auto; }
+  .page { box-sizing: border-box; max-width: 980px; margin: 0 auto; padding: 32px 44px 80px; }
+  .markdown-body { background-color: transparent !important; }
+
+  /* Editor line wrapping, toggled via View ▸ Wrap Lines. Default = wrap on. */
+  .editor { white-space: pre-wrap; }
+  body[data-wrap="off"] .editor { white-space: pre; }
+
+  /* Always-visible, themed scrollbars on the panes (macOS hides overlay ones,
+     so horizontal + vertical bars stay visible when the window is small). */
+  .editor::-webkit-scrollbar, .preview::-webkit-scrollbar { width: 13px; height: 13px; }
+  .editor::-webkit-scrollbar-track, .preview::-webkit-scrollbar-track { background: var(--surface); }
+  .editor::-webkit-scrollbar-thumb, .preview::-webkit-scrollbar-thumb {
+    background: var(--border); border-radius: 7px; border: 3px solid var(--surface);
+  }
+  .editor::-webkit-scrollbar-thumb:hover, .preview::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  .editor::-webkit-scrollbar-corner, .preview::-webkit-scrollbar-corner { background: var(--surface); }
+
+  /* Keep toolbar controls from being clipped when the window narrows. */
+  .toolbar { min-width: 0; }
+  .toolbar .segmented, .toolbar .save-btn, .toolbar .theme-switch { flex: 0 0 auto; }
+
+  /* ---- Find / Replace bar (overlays the top-right of the editor area) ---- */
+  .findbar {
+    position: absolute; top: 10px; right: 16px; z-index: 60;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 32px);
+    padding: 7px 8px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface); box-shadow: 0 8px 24px rgba(0,0,0,.22);
+  }
+  .findbar[hidden] { display: none; }
+  .findbar input[type="text"] {
+    font: inherit; font-size: 13px; padding: 4px 8px; width: 150px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text); outline: none;
+  }
+  .findbar input[type="text"]:focus { border-color: var(--accent); }
+  .findbar button {
+    appearance: none; font: inherit; font-size: 13px; cursor: pointer;
+    min-width: 28px; height: 26px; padding: 0 7px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text);
+  }
+  .findbar button:hover { border-color: var(--accent); }
+  .findbar button[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .find-count { font-size: 12px; color: var(--muted); min-width: 40px; text-align: center; }
+  /* Replace controls show only in find-and-replace mode. */
+  .findbar:not(.replace-mode) .replace-only { display: none; }
+
+  /* ---- AI chat panel: a docked flex item that squeezes the workspace (never overlays) ---- */
+  .chat {
+    flex: 0 0 360px; min-width: 0; min-height: 0;
+    display: none; flex-direction: column;
+    background: var(--surface); border-left: 1px solid var(--border);
+  }
+  body[data-chat="on"] .chat { display: flex; }
+  /* Border sits on whichever edge faces the content. */
+  body[data-chat-side="left"]   .chat { border-left: none; border-right: 1px solid var(--border); }
+  body[data-chat-side="bottom"] .chat { flex-basis: 40%; border-left: none; border-top: 1px solid var(--border); }
+  .chat-head {
+    flex: none; display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px;
+  }
+  .chat-head-btns { display: inline-flex; gap: 4px; }
+  .chat-head button {
+    appearance: none; border: none; background: transparent; color: var(--muted);
+    font: inherit; font-size: 15px; cursor: pointer; padding: 0 4px; border-radius: 5px;
+  }
+  .chat-head button:hover { background: var(--bg); color: var(--text); }
+  .chat-msgs { flex: 1 1 auto; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { padding: 8px 11px; border-radius: 10px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; max-width: 92%; }
+  .msg-user { align-self: flex-end; background: var(--accent); color: #fff; }
+  .msg-assistant { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); color: var(--text); }
+  .chat-input { flex: none; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
+  .chat-input textarea {
+    flex: 1 1 auto; resize: none; font: inherit; font-size: 13px; padding: 6px 8px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); outline: none;
+  }
+  .chat-input textarea:focus { border-color: var(--accent); }
+  .chat-input button {
+    appearance: none; font: inherit; font-size: 13px; cursor: pointer; padding: 0 14px;
+    border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: #fff;
+  }
+
+  /* Theme switcher: a circular button; clicking cycles Light → Dark → System. */
+  .theme-switch { position: relative; }
+  .theme-btn {
+    width: 36px; height: 36px; border-radius: 50%;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+    cursor: pointer; display: grid; place-items: center; padding: 0;
+    transition: background-color 180ms ease, border-color 180ms ease;
+  }
+  .theme-btn:hover { border-color: var(--accent); }
+  .theme-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .theme-btn .ico { display: none; }
+  :root[data-theme-choice="light"]  .theme-btn .ico-light  { display: block; }
+  :root[data-theme-choice="dark"]   .theme-btn .ico-dark   { display: block; }
+  :root[data-theme-choice="system"] .theme-btn .ico-system { display: block; }
+</style>
+</head>
+<body data-mode="preview" data-dirty="false" data-chat-side="right">
+
+<div class="toolbar">
+  <div class="segmented" role="tablist" aria-label="View mode">
+    <button id="mode-preview" role="tab" aria-selected="true"  data-mode="preview">Preview</button>
+    <button id="mode-edit"    role="tab" aria-selected="false" data-mode="edit">Edit</button>
+    <button id="mode-split"   role="tab" aria-selected="false" data-mode="split">Split</button>
+  </div>
+
+  <div class="spacer"></div>
+
+  <button class="save-btn" id="saveBtn" disabled>
+    <span class="dirty-dot" aria-hidden="true"></span>
+    <span>Save</span>
+  </button>
+
+  <button class="save-btn" id="aiBtn" title="AI Chat">AI</button>
+
+  <div class="theme-switch">
+    <button class="theme-btn" id="themeBtn" aria-label="Theme" title="Theme">
+      <!-- Sun (light) -->
+      <svg class="ico ico-light" width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3.4" fill="none" stroke="currentColor" stroke-width="1.3"/><g stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><line x1="8" y1="1" x2="8" y2="2.8"/><line x1="8" y1="13.2" x2="8" y2="15"/><line x1="1" y1="8" x2="2.8" y2="8"/><line x1="13.2" y1="8" x2="15" y2="8"/><line x1="3.05" y1="3.05" x2="4.3" y2="4.3"/><line x1="11.7" y1="11.7" x2="12.95" y2="12.95"/><line x1="12.95" y1="3.05" x2="11.7" y2="4.3"/><line x1="4.3" y1="11.7" x2="3.05" y2="12.95"/></g></svg>
+      <!-- Moon (dark) -->
+      <svg class="ico ico-dark" width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 9.5 A6 6 0 1 1 6.5 3 A5 5 0 0 0 13 9.5 Z" fill="currentColor"/></svg>
+      <!-- Half-filled circle (system) -->
+      <svg class="ico ico-system" width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1 A7 7 0 0 1 8 15 Z" fill="currentColor"/></svg>
+    </button>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="workspace">
+    <textarea class="editor" id="editor" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+    <div class="gutter" id="gutter" title="Drag to resize"></div>
+    <div class="preview" id="preview"><div class="page"><article class="markdown-body" id="content"></article></div></div>
+
+    <div class="findbar" id="findbar" hidden>
+      <input type="text" id="findInput" placeholder="Find" aria-label="Find">
+      <span class="find-count" id="findCount">0/0</span>
+      <button id="findPrev" title="Previous (⇧⏎)" aria-label="Previous match">↑</button>
+      <button id="findNext" title="Next (⏎)" aria-label="Next match">↓</button>
+      <button id="findCase" title="Match case" aria-pressed="false" aria-label="Match case">Aa</button>
+      <input type="text" id="replaceInput" class="replace-only" placeholder="Replace" aria-label="Replace">
+      <button id="replaceOne" class="replace-only">Replace</button>
+      <button id="replaceAll" class="replace-only">All</button>
+      <button id="findClose" title="Close (Esc)" aria-label="Close find bar">✕</button>
+    </div>
+  </div>
+
+  <div class="chat" id="chatPanel">
+    <div class="chat-head">
+      <span>AI Chat</span>
+      <span class="chat-head-btns">
+        <button id="chatMove" title="Move panel (right · left · bottom)" aria-label="Move panel">⇆</button>
+        <button id="chatClose" title="Close" aria-label="Close chat">✕</button>
+      </span>
+    </div>
+    <div class="chat-msgs" id="chatMsgs"></div>
+    <div class="chat-input">
+      <textarea id="chatText" rows="2" placeholder="Ask about this document…  (⌘↵ to send)"></textarea>
+      <button id="chatSend">Send</button>
+    </div>
+  </div>
+</div>
+
+<script src="__RES__/marked.min.js"></script>
+<script src="__RES__/highlight.min.js"></script>
+<script>
+const MD = __MARKDOWN__;
+
+(function app() {
+  var body = document.body;
+  var editor = document.getElementById('editor');
+  var content = document.getElementById('content');
+  var preview = document.getElementById('preview');
+  var saveBtn = document.getElementById('saveBtn');
+
+  editor.value = MD;
+
+  // ---- Swift bridge (no-ops gracefully if not present) ----
+  function bridge(msg) {
+    try {
+      if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.bridge) {
+        window.webkit.messageHandlers.bridge.postMessage(msg);
+      }
+    } catch (e) {}
+  }
+
+  // ---- Render preview from the editor's current text ----
+  function render() {
+    var text = editor.value;
+    if (window.marked) {
+      marked.setOptions({ gfm: true, breaks: false });
+      content.innerHTML = marked.parse(text);
+    } else {
+      content.textContent = text;
+    }
+    if (window.hljs) {
+      content.querySelectorAll('pre code').forEach(function (b) {
+        try { hljs.highlightElement(b); } catch (e) {}
+      });
+    }
+  }
+
+  // ---- Dirty state ----
+  var dirty = false;
+  function setDirty(d) {
+    if (d === dirty) return;
+    dirty = d;
+    body.setAttribute('data-dirty', String(d));
+    saveBtn.disabled = !d;
+    bridge({ action: 'dirty', dirty: d });
+  }
+
+  // ---- Save ----
+  function save() {
+    bridge({ action: 'save', text: editor.value });
+  }
+  // Called by Swift after a successful disk write.
+  window.__onSaved = function () { setDirty(false); };
+
+  // ---- Editing ----
+  var renderTimer = null, changeTimer = null;
+  editor.addEventListener('input', function () {
+    setDirty(true);
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(render, 150);
+    // Keep Swift's cached copy current for menu/close-triggered saves.
+    clearTimeout(changeTimer);
+    changeTimer = setTimeout(function () { bridge({ action: 'change', text: editor.value }); }, 250);
+  });
+  // Tab inserts spaces instead of moving focus.
+  editor.addEventListener('keydown', function (e) {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      var s = editor.selectionStart, en = editor.selectionEnd;
+      editor.value = editor.value.slice(0, s) + '  ' + editor.value.slice(en);
+      editor.selectionStart = editor.selectionEnd = s + 2;
+      editor.dispatchEvent(new Event('input'));
+    }
+  });
+
+  // ---- Mode switching ----
+  var modeButtons = Array.prototype.slice.call(document.querySelectorAll('.segmented button'));
+  function setMode(mode) {
+    if (mode !== 'preview' && mode !== 'edit' && mode !== 'split') mode = 'preview';
+    body.setAttribute('data-mode', mode);
+    modeButtons.forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.mode === mode)); });
+    try { localStorage.setItem('viewerMode', mode); } catch (e) {}
+    render();
+    if (mode !== 'preview') editor.focus();
+  }
+  window.__setMode = setMode;
+  modeButtons.forEach(function (b) { b.addEventListener('click', function () { setMode(b.dataset.mode); }); });
+
+  saveBtn.addEventListener('click', save);
+
+  // Cmd/Ctrl+S saves.
+  document.addEventListener('keydown', function (e) {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+      e.preventDefault();
+      if (dirty) save();
+    }
+  });
+
+  // ---- Synced scrolling (Split mode) + preview scroll persistence ----
+  var isSyncing = false;
+  function syncScroll(src, dst) {
+    if (isSyncing) return;
+    if (body.getAttribute('data-mode') !== 'split') return;
+    isSyncing = true;
+    var srcVMax = src.scrollHeight - src.clientHeight;
+    var dstVMax = dst.scrollHeight - dst.clientHeight;
+    dst.scrollTop = srcVMax > 0 ? (src.scrollTop / srcVMax) * dstVMax : 0;
+    var srcHMax = src.scrollWidth - src.clientWidth;
+    var dstHMax = dst.scrollWidth - dst.clientWidth;
+    if (srcHMax > 0) dst.scrollLeft = (src.scrollLeft / srcHMax) * dstHMax;
+    requestAnimationFrame(function () { isSyncing = false; });
+  }
+  editor.addEventListener('scroll', function () {
+    syncScroll(editor, preview);
+    try { sessionStorage.setItem('scrollY', String(preview.scrollTop)); } catch (e) {}
+  }, { passive: true });
+  preview.addEventListener('scroll', function () {
+    syncScroll(preview, editor);
+    try { sessionStorage.setItem('scrollY', String(preview.scrollTop)); } catch (e) {}
+  }, { passive: true });
+  // Restore preview scroll position across live-reloads (same file:// origin).
+  try {
+    var _sy = sessionStorage.getItem('scrollY');
+    if (_sy) preview.scrollTop = parseInt(_sy, 10);
+  } catch (e) {}
+
+  // ---- Wrap toggle (View ▸ Wrap Lines) ----
+  function wrapOn() {
+    try { return localStorage.getItem('wrapLines') !== '0'; } catch (e) { return true; }
+  }
+  function applyWrap(on) {
+    body.setAttribute('data-wrap', on ? 'on' : 'off');
+    editor.setAttribute('wrap', on ? 'soft' : 'off');
+    try { localStorage.setItem('wrapLines', on ? '1' : '0'); } catch (e) {}
+    bridge({ action: 'setWrap', wrap: on });   // keep the native menu checkmark in sync
+  }
+  window.__toggleWrap = function () { applyWrap(!wrapOn()); };
+
+  // ---- Draggable splitter between editor and preview (Split mode) ----
+  (function splitter() {
+    var workspace = document.querySelector('.workspace');
+    var gutter = document.getElementById('gutter');
+    try { var saved = localStorage.getItem('splitRatio'); if (saved) workspace.style.setProperty('--split', saved); } catch (e) {}
+    var dragging = false;
+    gutter.addEventListener('mousedown', function (e) {
+      if (body.getAttribute('data-mode') !== 'split') return;
+      dragging = true;
+      body.classList.add('col-resizing');
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      var rect = workspace.getBoundingClientRect();
+      var pct = Math.max(15, Math.min(85, (e.clientX - rect.left) / rect.width * 100));
+      var val = pct.toFixed(2) + '%';
+      workspace.style.setProperty('--split', val);
+      try { localStorage.setItem('splitRatio', val); } catch (e2) {}
+    });
+    document.addEventListener('mouseup', function () {
+      if (!dragging) return;
+      dragging = false;
+      body.classList.remove('col-resizing');
+    });
+    // Double-click the gutter to reset to a 50/50 split.
+    gutter.addEventListener('dblclick', function () {
+      workspace.style.setProperty('--split', '50%');
+      try { localStorage.setItem('splitRatio', '50%'); } catch (e) {}
+    });
+  })();
+
+  // ---- Find / Replace (operates on the editor's raw markdown) ----
+  (function findReplace() {
+    var bar = document.getElementById('findbar');
+    var findInput = document.getElementById('findInput');
+    var replaceInput = document.getElementById('replaceInput');
+    var countEl = document.getElementById('findCount');
+    var caseBtn = document.getElementById('findCase');
+    var matches = [];      // start indices of each match
+    var current = -1;      // index into `matches`
+    var caseSensitive = false;
+
+    function findAll(hay, needle) {
+      var res = [];
+      if (!needle) return res;
+      var h = caseSensitive ? hay : hay.toLowerCase();
+      var n = caseSensitive ? needle : needle.toLowerCase();
+      var i = h.indexOf(n);
+      while (i !== -1) { res.push(i); i = h.indexOf(n, i + n.length); }
+      return res;
+    }
+    function refreshCount() {
+      countEl.textContent = matches.length ? (current + 1) + '/' + matches.length : '0/0';
+    }
+    function recompute(keepPos) {
+      var prevStart = (current >= 0 && matches[current] != null) ? matches[current] : null;
+      matches = findAll(editor.value, findInput.value);
+      if (!matches.length) { current = -1; }
+      else if (keepPos && prevStart != null) {
+        var idx = matches.indexOf(prevStart);
+        current = idx !== -1 ? idx : 0;
+      } else { current = 0; }
+      refreshCount();
+    }
+    // Scroll the editor so the given character offset is roughly centered,
+    // WITHOUT focusing the editor (focus must stay in the find field while typing).
+    function scrollToOffset(offset) {
+      var line = editor.value.slice(0, offset).split('\n').length - 1;
+      var lh = parseFloat(getComputedStyle(editor).lineHeight) || 20;
+      editor.scrollTop = Math.max(0, line * lh - editor.clientHeight / 2);
+    }
+    function selectCurrent() {
+      if (current < 0 || !matches.length) { refreshCount(); return; }
+      var start = matches[current], end = start + findInput.value.length;
+      editor.setSelectionRange(start, end);   // sets the selection; focus stays in find field
+      scrollToOffset(start);
+      refreshCount();
+    }
+    function step(delta) {
+      if (!matches.length) return;
+      current = (current + delta + matches.length) % matches.length;
+      selectCurrent();
+    }
+    function replaceCurrent() {
+      if (current < 0 || !matches.length) return;
+      var start = matches[current], end = start + findInput.value.length;
+      editor.value = editor.value.slice(0, start) + replaceInput.value + editor.value.slice(end);
+      editor.dispatchEvent(new Event('input'));   // updates preview + dirty state
+      recompute(false);
+      // Move selection to the next match at/after the edit point.
+      if (matches.length) {
+        var after = matches.findIndex(function (m) { return m >= start; });
+        current = after === -1 ? 0 : after;
+        selectCurrent();
+      }
+    }
+    function replaceAll() {
+      if (!findInput.value) return;
+      var occ = findAll(editor.value, findInput.value);
+      if (!occ.length) return;
+      var out = '', last = 0, term = findInput.value;
+      for (var k = 0; k < occ.length; k++) {
+        out += editor.value.slice(last, occ[k]) + replaceInput.value;
+        last = occ[k] + term.length;
+      }
+      out += editor.value.slice(last);
+      editor.value = out;
+      editor.dispatchEvent(new Event('input'));
+      recompute(false);
+    }
+
+    function open(replaceMode) {
+      // Find needs the editor visible; switch out of Preview-only mode.
+      if (body.getAttribute('data-mode') === 'preview') setMode('edit');
+      bar.hidden = false;
+      bar.classList.toggle('replace-mode', !!replaceMode);
+      // Seed the find field with any current editor selection.
+      var sel = editor.value.substring(editor.selectionStart, editor.selectionEnd);
+      if (sel && sel.indexOf('\n') === -1) findInput.value = sel;
+      findInput.focus();
+      findInput.select();
+      recompute(false);
+      selectCurrent();
+    }
+    function close() { bar.hidden = true; editor.focus(); }
+
+    window.__find = function () { open(false); };
+    window.__findReplace = function () { open(true); };
+
+    findInput.addEventListener('input', function () { recompute(false); selectCurrent(); });
+    findInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); step(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+    replaceInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); replaceCurrent(); }
+      else if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
+    document.getElementById('findNext').addEventListener('click', function () { step(1); });
+    document.getElementById('findPrev').addEventListener('click', function () { step(-1); });
+    document.getElementById('replaceOne').addEventListener('click', replaceCurrent);
+    document.getElementById('replaceAll').addEventListener('click', replaceAll);
+    document.getElementById('findClose').addEventListener('click', close);
+    caseBtn.addEventListener('click', function () {
+      caseSensitive = !caseSensitive;
+      caseBtn.setAttribute('aria-pressed', String(caseSensitive));
+      recompute(false); selectCurrent();
+    });
+
+    // Keyboard shortcuts (work even when the web view has focus).
+    document.addEventListener('keydown', function (e) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        open(e.altKey);
+      }
+    });
+  })();
+
+  // ---- AI assistant (improve selection / chat / generate) ----
+  (function ai() {
+    var counter = 0, pending = {};
+    function request(mode, payload) {
+      return new Promise(function (resolve, reject) {
+        var id = ++counter;
+        pending[id] = { resolve: resolve, reject: reject };
+        var msg = { action: 'ai', id: id, mode: mode };
+        for (var k in payload) msg[k] = payload[k];
+        bridge(msg);
+      });
+    }
+    window.__aiResult = function (id, text) {
+      var p = pending[id]; if (p) { delete pending[id]; p.resolve(text); }
+    };
+    window.__aiError = function (id, msg) {
+      var p = pending[id]; if (p) { delete pending[id]; p.reject(new Error(msg)); }
+    };
+
+    // Improve the current editor selection in place.
+    window.__aiImprove = function () {
+      if (body.getAttribute('data-mode') === 'preview') setMode('edit');
+      var s = editor.selectionStart, e = editor.selectionEnd;
+      var sel = editor.value.substring(s, e);
+      if (!sel) { alert('Select some text in the editor first.'); return; }
+      var instr = prompt('How should I revise the selection?', 'Improve clarity and fix grammar');
+      if (instr === null) return;
+      request('improve', { selection: sel, prompt: instr }).then(function (text) {
+        editor.value = editor.value.slice(0, s) + text + editor.value.slice(e);
+        editor.setSelectionRange(s, s + text.length);
+        editor.dispatchEvent(new Event('input'));
+      }).catch(function (err) { alert('AI error: ' + err.message); });
+    };
+
+    // Generate markdown from a prompt and insert at the cursor.
+    window.__aiGenerate = function () {
+      if (body.getAttribute('data-mode') === 'preview') setMode('edit');
+      var instr = prompt('Describe the markdown to generate and insert:', '');
+      if (!instr) return;
+      var pos = editor.selectionStart;
+      request('generate', { prompt: instr }).then(function (text) {
+        editor.value = editor.value.slice(0, pos) + text + editor.value.slice(pos);
+        editor.setSelectionRange(pos, pos + text.length);
+        editor.dispatchEvent(new Event('input'));
+      }).catch(function (err) { alert('AI error: ' + err.message); });
+    };
+
+    // Chat panel about the document.
+    var chatMsgs = document.getElementById('chatMsgs');
+    var chatText = document.getElementById('chatText');
+    var history = [];
+    function addMsg(role, text) {
+      var d = document.createElement('div');
+      d.className = 'msg msg-' + role;
+      d.textContent = text;
+      chatMsgs.appendChild(d);
+      chatMsgs.scrollTop = chatMsgs.scrollHeight;
+      return d;
+    }
+    function sendChat() {
+      var t = chatText.value.trim();
+      if (!t) return;
+      chatText.value = '';
+      addMsg('user', t);
+      var thinking = addMsg('assistant', '…');
+      var priorHistory = history.slice();
+      history.push({ role: 'user', content: t });
+      request('chat', { prompt: t, context: editor.value, history: priorHistory }).then(function (text) {
+        thinking.textContent = text;
+        history.push({ role: 'assistant', content: text });
+      }).catch(function (err) { thinking.textContent = '⚠️ ' + err.message; });
+    }
+    window.__toggleChat = function () {
+      var on = body.getAttribute('data-chat') === 'on';
+      body.setAttribute('data-chat', on ? 'off' : 'on');
+      if (!on) chatText.focus();
+    };
+    document.getElementById('aiBtn').addEventListener('click', window.__toggleChat);
+    document.getElementById('chatClose').addEventListener('click', function () { body.setAttribute('data-chat', 'off'); });
+    document.getElementById('chatSend').addEventListener('click', sendChat);
+    chatText.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendChat(); }
+    });
+
+    // Dock the panel right → left → bottom; persisted across sessions.
+    var SIDES = ['right', 'left', 'bottom'];
+    function setChatSide(side) {
+      if (SIDES.indexOf(side) === -1) side = 'right';
+      body.setAttribute('data-chat-side', side);
+      try { localStorage.setItem('chatSide', side); } catch (e) {}
+    }
+    document.getElementById('chatMove').addEventListener('click', function () {
+      var cur = body.getAttribute('data-chat-side') || 'right';
+      setChatSide(SIDES[(SIDES.indexOf(cur) + 1) % SIDES.length]);
+    });
+    try { setChatSide(localStorage.getItem('chatSide') || 'right'); } catch (e) {}
+  })();
+
+  // ---- Theme system (circular toggle: click cycles Light → Dark → System) ----
+  (function themeSystem() {
+    var root = document.documentElement;
+    var btn = document.getElementById('themeBtn');
+    var mql = window.matchMedia('(prefers-color-scheme: dark)');
+    var order = ['light', 'dark', 'system'];
+
+    function resolved(choice) {
+      if (choice === 'system') return mql.matches ? 'dark' : 'light';
+      return choice;
+    }
+    function applyStylesheets(mode) {
+      var dark = mode === 'dark';
+      document.getElementById('md-light').disabled = dark;
+      document.getElementById('md-dark').disabled = !dark;
+      document.getElementById('hljs-light').disabled = dark;
+      document.getElementById('hljs-dark').disabled = !dark;
+    }
+    function currentChoice() {
+      try { return localStorage.getItem('theme') || 'system'; } catch (e) { return 'system'; }
+    }
+    function apply(choice) {
+      var mode = resolved(choice);
+      root.setAttribute('data-theme', mode);
+      root.setAttribute('data-theme-choice', choice);   // drives which icon shows
+      applyStylesheets(mode);
+      var label = 'Theme: ' + choice.charAt(0).toUpperCase() + choice.slice(1);
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+      try { localStorage.setItem('theme', choice); } catch (e) {}
+    }
+
+    btn.addEventListener('click', function () {
+      var next = order[(order.indexOf(currentChoice()) + 1) % order.length];
+      apply(next);
+    });
+
+    // Live OS theme changes while in System mode.
+    mql.addEventListener('change', function () { if (currentChoice() === 'system') apply('system'); });
+
+    apply(currentChoice());
+  })();
+
+  // ---- Initial render + mode + wrap ----
+  render();
+  applyWrap(wrapOn());
+  var startMode = 'preview';
+  try { startMode = localStorage.getItem('viewerMode') || 'preview'; } catch (e) {}
+  setMode(startMode);
+})();
+</script>
+</body>
+</html>
