@@ -9,7 +9,7 @@ rendering, synced scrolling, find & replace, and a built-in multi‑provider AI 
 
 ![platform](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-blue)
 ![license](https://img.shields.io/badge/license-GPLv3-green)
-![built with](https://img.shields.io/badge/built%20with-Swift%20%2B%20WebKit-orange)
+![built with](https://img.shields.io/badge/built%20with-Swift%20%2B%20WebKit%20%C2%B7%20C%23%20%2B%20WebView2-orange)
 ![offline](https://img.shields.io/badge/runs-100%25%20offline-brightgreen)
 
 </div>
@@ -18,25 +18,24 @@ rendering, synced scrolling, find & replace, and a built-in multi‑provider AI 
 
 ## Screenshots
 
-> Images live in [`docs/screenshots/`](docs/screenshots). Add `split.png`, `ai-chat.png`,
-> `about.png`, and `settings.png` there and they'll appear below.
-
-| Split editing | AI chat (dockable) |
+| Split editing (light) | AI chat, docked (dark) |
 |:---:|:---:|
 | ![Split mode](docs/screenshots/split.png) | ![AI chat](docs/screenshots/ai-chat.png) |
 | **About** | **AI settings** |
 | ![About](docs/screenshots/about.png) | ![AI settings](docs/screenshots/settings.png) |
 
+*Shots are from the Windows build; the macOS app shares the same in-page UI.*
+
 ## Features
 
-- 📝 **Preview · Edit · Split** modes (`⌘1` / `⌘2` / `⌘3`) with a GitHub-style toolbar toggle
+- 📝 **Preview · Edit · Split** modes (`⌘1/2/3` · `Ctrl+1/2/3`) with a GitHub-style toolbar toggle
 - ↔️ **Draggable splitter** + **synced scrolling** between editor and preview (drag the divider; double-click to reset)
-- 💾 **Edit and save to disk** (`⌘S`) with an unsaved-changes dot and a Save / Don't Save / Cancel guard on close
-- 🔍 **Find & Replace** (`⌘F` / `⌥⌘F`): match count, next/prev, replace one/all, case toggle
+- 💾 **Edit and save to disk** (`⌘S` · `Ctrl+S`) with an unsaved-changes dot and a Save / Don't Save / Cancel guard on close
+- 🔍 **Find & Replace** (`⌘F` · `Ctrl+F`): match count, next/prev, replace one/all, case toggle
 - ↩️ **Wrap Lines** toggle (`View ▸ Wrap Lines`) — soft-wrap or horizontal scroll
 - 🤖 **AI assistant** — Improve a selection, chat about the document, or generate-and-insert, across **Groq, Nous Portal, OpenAI, Anthropic, and Gemini**. Dockable chat panel (right / left / bottom)
 - 🌗 **Light / Dark / System** theme (circular toggle), follows the OS
-- 🗂️ **Tabs** — multiple files as native window tabs, each with independent state
+- 🗂️ **Tabs** — multiple files as tabs (native window tabs on macOS; one tabbed window on Windows, where files opened from Explorer join the running instance)
 - 🔄 **Live reload** when the file changes on disk (paused while you have unsaved edits)
 - 🔒 **100% offline** rendering (marked + highlight.js + GitHub CSS bundled); AI calls go only to the provider you configure
 
@@ -89,7 +88,7 @@ Requires the Xcode command line tools (`xcode-select --install`) and internet on
 build (to fetch the bundled JS/CSS, cached afterward).
 
 ```bash
-git clone https://github.com/<you>/MarkdownViewer.git
+git clone https://github.com/dgodibadze/MarkdownViewer.git
 cd MarkdownViewer
 ./build.sh            # produces MarkdownViewer.app
 ./make-dmg.sh         # optional: produces MarkdownViewer.dmg
@@ -97,13 +96,13 @@ cd MarkdownViewer
 
 ## Usage
 
-| Action | Shortcut |
-|---|---|
-| Preview / Edit / Split | `⌘1` / `⌘2` / `⌘3` |
-| Save | `⌘S` |
-| Find / Find & Replace | `⌘F` / `⌥⌘F` |
-| Open / Close / Reload | `⌘O` / `⌘W` / `⌘R` |
-| Send chat message | `⌘↵` |
+| Action | macOS | Windows |
+|---|---|---|
+| Preview / Edit / Split | `⌘1` / `⌘2` / `⌘3` | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
+| Save | `⌘S` | `Ctrl+S` |
+| Find / Find & Replace | `⌘F` / `⌥⌘F` | `Ctrl+F` / `Ctrl+H` |
+| Open / Close / Reload | `⌘O` / `⌘W` / `⌘R` | `Ctrl+O` / `Ctrl+W` / `Ctrl+R` |
+| Send chat message | `⌘↵` | `Ctrl+↵` |
 
 - **Resize the split** by dragging the divider; **double-click** it for 50/50.
 - **Move the AI chat panel** with the ⇆ button in its header (right → left → bottom).
@@ -114,16 +113,19 @@ cd MarkdownViewer
    URL and model.
 2. Use **AI ▸ Improve Selection**, **Generate & Insert…**, or **Chat** (or the toolbar **AI** button).
 
-Keys are stored **per-provider in the macOS Keychain** and never leave your machine except in
-the request to the provider you chose. Default model ids are best-guesses and **editable** —
-if a call returns an HTTP 400/404 about the model, just correct the **Model** field.
+Keys are stored per-provider — in the **macOS Keychain**, or encrypted with **Windows
+DPAPI** for your user account — and never leave your machine except in the request to the
+provider you chose. Default model ids are best-guesses and **editable** — if a call returns
+an HTTP 400/404 about the model, just correct the **Model** field.
 
 ## How it works
 
-One Swift file (`Sources/main.swift`) drives one `WKWebView` per window that renders a bundled
-HTML template; Swift ↔ JS talk over a small message bridge. See
+One native source file per platform drives a web view that renders a bundled HTML template,
+talking to it over a small message bridge: `Sources/main.swift` + `WKWebView` on macOS,
+`windows/Program.cs` + WebView2 on Windows. See
 [`Resources/ARCHITECTURE.md`](Resources/ARCHITECTURE.md) for the full design and
-[`Resources/CHANGELOG.md`](Resources/CHANGELOG.md) for history.
+[`Resources/CHANGELOG.md`](Resources/CHANGELOG.md) for history. Contributions welcome — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License & credits
 

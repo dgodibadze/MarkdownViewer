@@ -1,7 +1,18 @@
 # MarkdownViewer — Changelog
 
-A standalone macOS markdown viewer/editor. This changelog tracks the
+A standalone markdown viewer/editor for macOS and Windows. This changelog tracks the
 MarkdownViewer app.
+
+## 1.0.0
+
+### Added
+- **Windows port** (`windows/`): the full app rebuilt natively for Windows with
+  C# + WinForms + WebView2, sharing the same rendering assets and in-page UI.
+  Tabs in one window, single-instance (files opened from Explorer join as tabs),
+  API keys encrypted with Windows DPAPI, `Ctrl`-based shortcuts.
+- **One-line installers**: `install.sh` (macOS — downloads the release DMG or
+  builds from source) and `install.ps1` (Windows — downloads the self-contained
+  build, installs the WebView2 Runtime if missing, adds a Start Menu shortcut).
 
 ## Unreleased
 
