@@ -4,10 +4,10 @@
 
 # MarkdownViewer
 
-**A fast, native macOS Markdown viewer & editor — Preview, Edit, and Split with live
+**A fast, native Markdown viewer & editor — Preview, Edit, and Split with live
 rendering, synced scrolling, find & replace, and a built-in multi‑provider AI assistant.**
 
-![platform](https://img.shields.io/badge/platform-macOS%2011%2B-blue)
+![platform](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-blue)
 ![license](https://img.shields.io/badge/license-GPLv3-green)
 ![built with](https://img.shields.io/badge/built%20with-Swift%20%2B%20WebKit-orange)
 ![offline](https://img.shields.io/badge/runs-100%25%20offline-brightgreen)
@@ -40,9 +40,37 @@ rendering, synced scrolling, find & replace, and a built-in multi‑provider AI 
 - 🔄 **Live reload** when the file changes on disk (paused while you have unsaved edits)
 - 🔒 **100% offline** rendering (marked + highlight.js + GitHub CSS bundled); AI calls go only to the provider you configure
 
-## Install
+## Install (one line)
 
-### Download (recommended)
+**macOS** — paste in Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.sh | bash
+```
+
+**Windows** — paste in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.ps1 | iex
+```
+
+Each installer detects everything else automatically: on macOS it grabs the latest DMG
+from [Releases](../../releases) (or builds from source if the release has no DMG yet) and
+installs to `/Applications`; on Windows it downloads the self-contained build, installs
+the WebView2 Runtime if missing, and adds a Start Menu shortcut — no admin rights needed.
+The `curl` line even works in **Git Bash on Windows** (it hands off to the PowerShell
+installer), so one command covers both platforms if Git Bash is your shell.
+
+## Windows version
+
+A full Windows port lives in [`windows/`](windows) — same features and the same bundled
+rendering assets, built with C# + WebView2 instead of Swift + WebKit (tabs, live reload,
+find & replace, AI assistant with DPAPI-encrypted keys, light/dark/system theme). See
+[`windows/README.md`](windows/README.md) for build and usage.
+
+## Manual install (macOS)
+
+### Download
 
 1. Download the latest **`MarkdownViewer.dmg`** from the [Releases](../../releases) page.
 2. Open it and drag **MarkdownViewer** onto **Applications**.
