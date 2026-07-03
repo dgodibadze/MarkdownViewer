@@ -7,9 +7,13 @@ $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $repo = 'dgodibadze/MarkdownViewer'
-Write-Host "Installing MarkdownViewer…"
+Write-Host "Installing MarkdownViewer..."
 
-$release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
+try {
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
+} catch {
+    throw "No published release found for $repo yet. Build from source instead: clone the repo and run windows\build.ps1 (needs the .NET 8 SDK)."
+}
 $asset = $release.assets | Where-Object { $_.name -match 'windows.*\.zip$' } | Select-Object -First 1
 if (-not $asset) {
     throw "The latest release has no Windows .zip asset. Build from source instead: clone the repo and run windows\build.ps1 (needs the .NET 8 SDK)."
@@ -17,7 +21,7 @@ if (-not $asset) {
 
 $dest = Join-Path $env:LOCALAPPDATA 'Programs\MarkdownViewer'
 $zip = Join-Path $env:TEMP 'MarkdownViewer-windows.zip'
-Write-Host "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB)) MB)…"
+Write-Host "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB)) MB)..."
 Invoke-WebRequest $asset.browser_download_url -OutFile $zip
 
 # Stop a running copy so files can be replaced on upgrade.
@@ -37,7 +41,7 @@ foreach ($k in $wvKeys) {
     try { if ((Get-ItemProperty $k -ErrorAction Stop).pv) { $hasWebView2 = $true } } catch {}
 }
 if (-not $hasWebView2) {
-    Write-Host "Installing the WebView2 Runtime (one-time)…"
+    Write-Host "Installing the WebView2 Runtime (one-time)..."
     $wvSetup = Join-Path $env:TEMP 'MicrosoftEdgeWebView2Setup.exe'
     Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile $wvSetup
     Start-Process $wvSetup -ArgumentList '/silent', '/install' -Wait
@@ -54,6 +58,6 @@ $link.Description = 'MarkdownViewer'
 $link.Save()
 
 Write-Host ""
-Write-Host "✓ Installed to $dest"
+Write-Host "Installed to $dest"
 Write-Host "  Launch it from the Start Menu (MarkdownViewer), or associate .md files:"
 Write-Host "  right-click a .md file -> Open with -> Choose another app -> MarkdownViewer.exe"
