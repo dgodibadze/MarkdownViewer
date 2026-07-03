@@ -632,6 +632,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
+    /// Open by typing or pasting an absolute path, e.g. /Users/James/USER.md
+    @objc func openPath(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Open Path"
+        alert.informativeText = "Paste the full path to a Markdown file.\nExample: /Users/James/USER.md"
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
+        field.placeholderString = "/Users/James/USER.md"
+        // Pre-fill from the clipboard when it already looks like a path.
+        if let clip = NSPasteboard.general.string(forType: .string) {
+            let t = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.hasPrefix("/") || t.hasPrefix("~") || t.hasPrefix("file://") {
+                field.stringValue = t
+            }
+        }
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            openFromString(field.stringValue)
+        }
+    }
+
+    /// Normalize a pasted path string and open it if it points to a real file.
+    func openFromString(_ raw: String) {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return }
+        // Strip surrounding quotes (paths copied from a terminal are often quoted).
+        if (s.hasPrefix("\"") && s.hasSuffix("\"")) || (s.hasPrefix("'") && s.hasSuffix("'")) {
+            s = String(s.dropFirst().dropLast())
+        }
+        // Unescape shell-style "\ " spaces.
+        s = s.replacingOccurrences(of: "\\ ", with: " ")
+
+        let url: URL
+        if s.hasPrefix("file://") {
+            url = URL(string: s) ?? URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+        } else {
+            url = URL(fileURLWithPath: (s as NSString).expandingTildeInPath)
+        }
+
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue {
+            openFile(url)
+        } else {
+            let err = NSAlert()
+            err.messageText = "File not found"
+            err.informativeText = url.path
+            err.addButton(withTitle: "OK")
+            err.runModal()
+        }
+    }
+
     @objc func reloadDocument(_ sender: Any?) {
         if let key = controllers.first(where: { $0.value.window?.isKeyWindow == true })?.key {
             controllers[key]?.window?.makeKeyAndOrderFront(nil)
@@ -738,6 +793,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         mainMenu.addItem(fileMenuItem)
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Open…", action: #selector(openDocument(_:)), keyEquivalent: "o")
+        let openPathItem = fileMenu.addItem(withTitle: "Open Path…", action: #selector(openPath(_:)), keyEquivalent: "g")
+        openPathItem.keyEquivalentModifierMask = [.command, .shift]
         fileMenu.addItem(withTitle: "Save", action: #selector(saveDocument(_:)), keyEquivalent: "s")
         let closeItem = fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         closeItem.target = nil

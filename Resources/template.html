@@ -117,7 +117,13 @@
   body[data-mode="split"] .editor { border-right: none; }
 
   .preview { overflow: auto; }
-  .page { box-sizing: border-box; max-width: 980px; margin: 0 auto; padding: 32px 44px 80px; }
+  /* Column width and side padding scale with zoom so characters-per-line stays
+     constant — bigger fonts get a proportionally wider column, not more wrapping. */
+  .page {
+    box-sizing: border-box; margin: 0 auto;
+    max-width: calc(980px * var(--zoom));
+    padding: calc(32px * var(--zoom)) calc(44px * var(--zoom)) calc(80px * var(--zoom));
+  }
   .markdown-body { background-color: transparent !important; }
 
   /* Editor line wrapping, toggled via View ▸ Wrap Lines. Default = wrap on. */
@@ -213,6 +219,30 @@
   :root[data-theme-choice="light"]  .theme-btn .ico-light  { display: block; }
   :root[data-theme-choice="dark"]   .theme-btn .ico-dark   { display: block; }
   :root[data-theme-choice="system"] .theme-btn .ico-system { display: block; }
+
+  /* ---- Copy button on fenced code blocks (appears on hover, like Claude) ---- */
+  .markdown-body pre { position: relative; }
+  .copy-btn {
+    position: absolute; top: 8px; right: 8px;
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 7px;
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    cursor: pointer; opacity: 0;
+    transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .markdown-body pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
+  .copy-btn:hover { color: var(--text); border-color: var(--accent); }
+  .copy-btn.copied { color: #1a7f37; border-color: #1a7f37; }
+  .copy-btn svg { width: 13px; height: 13px; display: block; }
+  .copy-btn .ico-check { display: none; }
+  .copy-btn.copied .ico-copy { display: none; }
+  .copy-btn.copied .ico-check { display: block; }
+
+  /* ---- Document zoom (Cmd +/-, Cmd 0 to reset). Scales preview + editor. ---- */
+  :root { --zoom: 1; }
+  .markdown-body { font-size: calc(16px * var(--zoom)); }
+  .editor { font-size: calc(13.5px * var(--zoom)); }
 </style>
 </head>
 <body data-mode="preview" data-dirty="false" data-chat-side="right">
@@ -317,6 +347,56 @@ const MD = __MARKDOWN__;
         try { hljs.highlightElement(b); } catch (e) {}
       });
     }
+    addCopyButtons(content);
+  }
+
+  // ---- Copy button on each code block (copies everything between ``` and ```) ----
+  var COPY_ICON = '<svg class="ico-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"/></svg>';
+  var CHECK_ICON = '<svg class="ico-check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function () { return legacyCopy(text); });
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+  function showCopied(btn) {
+    btn.classList.add('copied');
+    var label = btn.querySelector('.copy-label');
+    if (label) label.textContent = 'Copied';
+    clearTimeout(btn._copyTimer);
+    btn._copyTimer = setTimeout(function () {
+      btn.classList.remove('copied');
+      if (label) label.textContent = 'Copy';
+    }, 1500);
+  }
+  function addCopyButtons(root) {
+    root.querySelectorAll('pre').forEach(function (pre) {
+      if (pre.querySelector('.copy-btn')) return;       // already added
+      var code = pre.querySelector('code') || pre;
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'copy-btn';
+      btn.setAttribute('aria-label', 'Copy code');
+      btn.innerHTML = COPY_ICON + CHECK_ICON + '<span class="copy-label">Copy</span>';
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        Promise.resolve(copyText(code.textContent)).then(function () { showCopied(btn); });
+      });
+      pre.appendChild(btn);
+    });
   }
 
   // ---- Dirty state ----
@@ -718,6 +798,25 @@ const MD = __MARKDOWN__;
     mql.addEventListener('change', function () { if (currentChoice() === 'system') apply('system'); });
 
     apply(currentChoice());
+  })();
+
+  // ---- Document zoom: Cmd/Ctrl +  /  Cmd/Ctrl -  /  Cmd/Ctrl 0 (reset) ----
+  (function zoom() {
+    var KEY = 'zoomLevel', MIN = 0.6, MAX = 2.6, STEP = 0.1;
+    function get() { var v = parseFloat(localStorage.getItem(KEY)); return isNaN(v) ? 1 : v; }
+    function clamp(v) { return Math.min(MAX, Math.max(MIN, Math.round(v * 100) / 100)); }
+    function apply(v) {
+      document.documentElement.style.setProperty('--zoom', String(v));
+      try { localStorage.setItem(KEY, String(v)); } catch (e) {}
+    }
+    function bump(d) { apply(clamp(get() + d)); }
+    document.addEventListener('keydown', function (e) {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); bump(STEP); }
+      else if (e.key === '-' || e.key === '_') { e.preventDefault(); bump(-STEP); }
+      else if (e.key === '0') { e.preventDefault(); apply(1); }
+    });
+    apply(get());   // restore last zoom across reloads/sessions
   })();
 
   // ---- Initial render + mode + wrap ----
