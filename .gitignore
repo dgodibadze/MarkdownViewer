@@ -2,3 +2,8 @@ MarkdownViewer.app/
 *.dmg
 .DS_Store
 build/
+
+# Windows build output
+windows/bin/
+windows/obj/
+windows/dist/

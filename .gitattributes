@@ -1,0 +1,4 @@
+# Shell scripts must stay LF or macOS sh/bash will choke on CRLF.
+*.sh text eol=lf
+# PowerShell is fine either way; keep native.
+*.ps1 text

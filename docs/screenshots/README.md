@@ -1,6 +1,7 @@
 # Screenshots
 
-Drop PNGs here with these exact names so they appear in the main `README.md`:
+The current shots were captured from the Windows build. To refresh them (or replace with
+macOS captures), drop PNGs here with these exact names — they appear in the main `README.md`:
 
 | Filename | What it should show |
 |---|---|
