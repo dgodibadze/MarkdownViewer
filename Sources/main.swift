@@ -831,10 +831,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         let changelogBtn = NSButton(title: "Changelog", target: self, action: #selector(openChangelog(_:)))
         changelogBtn.bezelStyle = .rounded
-        let archBtn = NSButton(title: "Architecture / Design", target: self, action: #selector(openArchitecture(_:)))
+        let archBtn = NSButton(title: "Architecture", target: self, action: #selector(openArchitecture(_:)))
         archBtn.bezelStyle = .rounded
+        let designBtn = NSButton(title: "Design", target: self, action: #selector(openDesign(_:)))
+        designBtn.bezelStyle = .rounded
 
-        let buttons = NSStackView(views: [changelogBtn, archBtn])
+        let buttons = NSStackView(views: [changelogBtn, archBtn, designBtn])
         buttons.orientation = .horizontal
         buttons.spacing = 10
 
@@ -856,6 +858,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func openChangelog(_ sender: Any?) { openBundledDoc("CHANGELOG.md") }
     @objc func openArchitecture(_ sender: Any?) { openBundledDoc("ARCHITECTURE.md") }
+    @objc func openDesign(_ sender: Any?) { openBundledDoc("DESIGN.md") }
 
     /// Opens a bundled markdown doc by copying it to a throwaway temp file and viewing that
     /// (so any edits never touch the file inside the app bundle).

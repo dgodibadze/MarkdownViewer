@@ -5,6 +5,23 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.4] — 2026-07-12
+
+### Added
+
+- **Design document** (`Resources/DESIGN.md`): how every feature works
+  end-to-end — rendering, security model, the save/dirty pipeline and its
+  data-loss invariants, live reload, undo, find, scroll sync, theming, AI
+  flows — plus the versioning policy and the platform-support story (universal
+  macOS binary; why Windows would require a shell rewrite). Reachable from a
+  new **Design** button in the About window.
+
+### Changed
+
+- `ARCHITECTURE.md` and `CLAUDE.md` refreshed to match the v1.1–v2.3 changes
+  (universal build, CSP/sanitizer, `__getText` save flow, new traps and
+  conventions).
+
 ## [2.3] — 2026-07-12
 
 ### Added

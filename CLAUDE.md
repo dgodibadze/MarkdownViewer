@@ -49,9 +49,9 @@ Handled in `ViewerWindowController.userContentController` — actions: `dirty`,
 `change`, `save`, `setWrap`, `ai`.
 
 Swift → JS: `webView.evaluateJavaScript("window.__xxx && window.__xxx()")`.
-Globals the native menus call: `__setMode`, `__toggleWrap`, `__find`,
+Globals the native side calls: `__setMode`, `__toggleWrap`, `__find`,
 `__findReplace`, `__aiImprove`, `__aiGenerate`, `__toggleChat`, `__onSaved`,
-`__aiResult`, `__aiError`.
+`__getText` (live editor text, pulled before every save), `__aiResult`, `__aiError`.
 
 **If you add a menu item that acts on the document, follow this pattern** — put the
 logic in JS, expose a `window.__something`, and have the menu item call it.
@@ -114,23 +114,63 @@ Both have caught real errors. They do not replace an actual build.
    `file://` WKWebView. The code-block copy button tries it, then falls back to a
    hidden textarea + `document.execCommand('copy')`.
 
+6. **`__MARKDOWN__` must be the LAST token substituted** in `Renderer.render()`.
+   It injects arbitrary document text; any token replaced after it also matches
+   occurrences *inside* the document (a file containing the literal `__TITLE__`
+   used to get corrupted). `jsStringLiteral()` also explicitly escapes `</` so a
+   literal `</script>` in a document can't terminate the embedding script.
+
+7. **Never assign `editor.value` directly for edits** — it wipes the textarea's
+   native undo stack (⌘Z goes dead). All programmatic edits (Tab, Replace,
+   AI insert) go through `spliceEditor()`, which uses
+   `document.execCommand('insertText')` so WebKit records a normal undoable edit.
+
+8. **Saves must never trust a possibly-empty cache.** `lastText` is seeded from
+   disk on every load/reload, and `save()` pulls the live text via
+   `window.__getText()` first, falling back to the cache only if the page can't
+   answer. Before this, File ▸ Save on an unedited document wrote "" and wiped
+   the file. Quit uses `.terminateLater` so async saves finish before exit.
+
+9. **The template ships a CSP + sanitizer** (rendered markdown is untrusted
+   HTML). New in-page features that need network access or remote scripts will
+   be blocked by `connect-src 'none'` / `script-src file: 'unsafe-inline'` —
+   that's deliberate; route anything network-shaped through the Swift bridge.
+   The sanitizer strips `on*` attributes from the preview after every render.
+
 ## Conventions
 
 - Single-file-per-concern: don't split `main.swift` or `template.html` without a
   strong reason; the build script compiles one Swift file.
 - All CSS colors go through the theme variables (`--bg`, `--surface`, `--text`,
-  `--muted`, `--border`, `--accent`) defined under `:root[data-theme="light|dark"]`.
-  Never hardcode a color.
+  `--muted`, `--border`, `--accent`, `--success`) defined under
+  `:root[data-theme="light|dark"]`. Never hardcode a color.
+- **Versioning policy**: every fix or new piece of functionality bumps the app
+  version by 0.1 (`CFBundleShortVersionString` **and** `CFBundleVersion` in
+  `Info.plist`), gets a dated section in the root `CHANGELOG.md` (the canonical
+  changelog — build.sh copies it into the bundle for the About window), and is
+  its own git commit titled `v<X.Y>: <summary>`.
+- Docs shown by the About window: `CHANGELOG.md` (root), `Resources/ARCHITECTURE.md`
+  (structure), `Resources/DESIGN.md` (behavior/how-it-works). Update DESIGN.md when
+  changing feature behavior.
 - Theme is Light/Dark/System, persisted in `localStorage` under `theme`, resolved
   before first paint by an inline script in `<head>`.
 - UI stays minimalist. Prefer a keyboard shortcut over another toolbar button.
 
 ## State as of this handoff
 
-Working tree has **uncommitted changes** to `Sources/main.swift` (full Edit menu,
-Open Path…) and `Resources/template.html` (code-block copy buttons, zoom,
-scroll-sync fix). Build and test, then commit.
+Clean tree, one commit per version (see `git log` / `CHANGELOG.md`). App is at
+**v2.4**: a bug-fix sweep (v1.1–v2.2) covering the save data-loss paths, quit
+prompt, AI URL crash, token substitution order, anchor links, undo preservation,
+reload semantics, window cascading, Gemini key header, CSP + sanitizer, Keychain
+error surfacing, and modernized defaults; v2.3 made the binary universal
+(arm64 + x86_64); v2.4 added `Resources/DESIGN.md` and refreshed the docs.
 
-Recent additions, newest first: split-pane scroll-drift fix; full Edit menu
-(Cut/Paste/Undo/Redo); zoom via Cmd +/-/0 with proportional column width;
-copy button on code blocks; File ▸ Open Path… (⇧⌘G) to open a pasted absolute path.
+The build is a **universal binary** — `build.sh` compiles each arch with
+`-target <arch>-apple-macos11.0` and merges with `lipo`. Windows support is
+deliberately out of scope (AppKit/WKWebView shell); see DESIGN.md → Platform
+support for the porting story if it ever comes up.
+
+Known future-feature backlog (from the July 2026 review, unimplemented):
+PDF export/print, TOC sidebar, Mermaid/KaTeX, clickable task checkboxes,
+streaming AI, Open Recent / Dock-reopen / proxy-icon polish, file-descriptor
+watching instead of 1 Hz polling.
