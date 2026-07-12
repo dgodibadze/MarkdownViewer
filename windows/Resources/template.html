@@ -38,10 +38,12 @@
   :root[data-theme="light"] {
     --bg: #ffffff; --surface: #f6f8fa; --text: #1f2328; --muted: #59636e;
     --border: #d1d9e0; --accent: #0969da; --success: #1a7f37;
+    --find-hit: #fff8c5; --find-hit-current: #ffd643;
   }
   :root[data-theme="dark"] {
     --bg: #0d1117; --surface: #161b22; --text: #e6edf3; --muted: #9198a1;
     --border: #30363d; --accent: #4493f8; --success: #3fb950;
+    --find-hit: rgba(187, 128, 9, .45); --find-hit-current: rgba(210, 153, 34, .85);
   }
   html, body {
     height: 100%; margin: 0; padding: 0; overflow: hidden;
@@ -107,15 +109,41 @@
   body.col-resizing { cursor: col-resize; user-select: none; }
   body.col-resizing .editor, body.col-resizing .preview { pointer-events: none; }
 
-  .editor {
-    box-sizing: border-box; width: 100%; height: 100%; resize: none;
-    border: none; outline: none; overflow: auto;
-    padding: 24px 28px; border-right: 1px solid transparent;
-    background: var(--bg); color: var(--text);
+  /* The editor textarea and its find-highlight backdrop occupy the SAME grid
+     cell and must share EXACT text metrics (font, size, padding, wrap,
+     border, tab-size, scrollbar width) — any mismatch makes the highlights
+     drift from the real text. Keep every metric in this shared rule. */
+  .editor, .editor-backdrop {
+    grid-column: 1; grid-row: 1;
+    box-sizing: border-box; width: 100%; height: 100%;
+    border: none; border-right: 1px solid transparent;
+    padding: 24px 28px;
     font-family: Consolas, "Cascadia Mono", ui-monospace, Menlo, monospace;
     font-size: 13.5px; line-height: 1.6; tab-size: 2;
+    white-space: pre-wrap; overflow-wrap: break-word;
   }
-  body[data-mode="split"] .editor { border-right: none; }
+  body[data-mode="split"] .editor, body[data-mode="split"] .editor-backdrop { border-right: none; }
+  body[data-mode="preview"] .editor-backdrop { display: none; }
+  .editor {
+    /* overflow:scroll (not auto) — must match the backdrop's always-reserved
+       scrollbars, or content widths (and wrap points) diverge on short docs. */
+    resize: none; outline: none; overflow: scroll;
+    background: transparent; color: var(--text);
+    position: relative; z-index: 1;   /* text renders above the backdrop */
+  }
+  /* Backdrop: mirrors the editor's text with <mark>s on find matches. Text is
+     transparent (the textarea draws it); only the mark backgrounds show.
+     overflow:scroll + transparent scrollbars so its content width matches the
+     editor's exactly (a hidden scrollbar would shift the wrap points). */
+  .editor-backdrop {
+    position: relative; overflow: scroll;
+    background: var(--bg); color: transparent;
+  }
+  .editor-backdrop::-webkit-scrollbar { width: 13px; height: 13px; background: transparent; }
+  .editor-backdrop::-webkit-scrollbar-track, .editor-backdrop::-webkit-scrollbar-thumb,
+  .editor-backdrop::-webkit-scrollbar-corner { background: transparent; }
+  .editor-backdrop mark { color: transparent; background: var(--find-hit); border-radius: 2px; }
+  .editor-backdrop mark.current { background: var(--find-hit-current); }
 
   .preview { overflow: auto; }
   /* Column width and side padding scale with zoom so characters-per-line stays
@@ -127,9 +155,9 @@
   }
   .markdown-body { background-color: transparent !important; }
 
-  /* Editor line wrapping, toggled via View ▸ Wrap Lines. Default = wrap on. */
-  .editor { white-space: pre-wrap; }
-  body[data-wrap="off"] .editor { white-space: pre; }
+  /* Editor line wrapping, toggled via View ▸ Wrap Lines. Default = wrap on
+     (set in the shared editor/backdrop rule above). */
+  body[data-wrap="off"] .editor, body[data-wrap="off"] .editor-backdrop { white-space: pre; }
 
   /* Always-visible, themed scrollbars on the panes (macOS hides overlay ones,
      so horizontal + vertical bars stay visible when the window is small). */
@@ -208,7 +236,7 @@
   /* ---- Document zoom (Ctrl +/-, Ctrl 0 to reset). Scales preview + editor. ---- */
   :root { --zoom: 1; }
   .markdown-body { font-size: calc(16px * var(--zoom)); }
-  .editor { font-size: calc(13.5px * var(--zoom)); }
+  .editor, .editor-backdrop { font-size: calc(13.5px * var(--zoom)); }
 </style>
 </head>
 <body data-mode="preview" data-dirty="false">
@@ -241,11 +269,13 @@
 
 <div class="stage">
   <div class="workspace">
+    <div class="editor-backdrop" id="editorBackdrop" aria-hidden="true"></div>
     <textarea class="editor" id="editor" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
     <div class="gutter" id="gutter" title="Drag to resize"></div>
     <div class="preview" id="preview"><div class="page"><article class="markdown-body" id="content"></article></div></div>
 
     <div class="findbar" id="findbar" hidden>
+      <button id="findMode" title="Toggle replace" aria-label="Toggle replace" aria-pressed="false">▸</button>
       <input type="text" id="findInput" placeholder="Find" aria-label="Find">
       <span class="find-count" id="findCount">0/0</span>
       <button id="findPrev" title="Previous (Shift+Enter)" aria-label="Previous match">↑</button>
@@ -601,6 +631,8 @@ const MD = __MARKDOWN__;
     var replaceInput = document.getElementById('replaceInput');
     var countEl = document.getElementById('findCount');
     var caseBtn = document.getElementById('findCase');
+    var modeBtn = document.getElementById('findMode');
+    var backdrop = document.getElementById('editorBackdrop');
     var matches = [];      // start indices of each match
     var current = -1;      // index into `matches`
     var caseSensitive = false;
@@ -631,19 +663,57 @@ const MD = __MARKDOWN__;
         current = idx !== -1 ? idx : 0;
       } else { current = 0; }
       refreshCount();
+      renderHighlights();
     }
-    // Scroll the editor so the given character offset is roughly centered,
-    // WITHOUT focusing the editor (focus must stay in the find field while typing).
-    function scrollToOffset(offset) {
-      var line = editor.value.slice(0, offset).split('\n').length - 1;
-      var lh = parseFloat(getComputedStyle(editor).lineHeight) || 20;
-      editor.scrollTop = Math.max(0, line * lh - editor.clientHeight / 2);
+
+    // ---- Visible match highlighting ----
+    // A textarea does NOT paint its selection while unfocused (and focus must
+    // stay in the find field while typing), so matches are shown by mirroring
+    // the editor text into the backdrop layer with <mark>s. The backdrop
+    // shares the editor's exact metrics, so positions line up 1:1.
+    function escapeHtml(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+    function renderHighlights() {
+      if (bar.hidden || !matches.length || !findInput.value) { backdrop.innerHTML = ''; return; }
+      var text = editor.value, n = findInput.value.length;
+      var out = [], last = 0;
+      for (var i = 0; i < matches.length; i++) {
+        var s = matches[i];
+        out.push(escapeHtml(text.slice(last, s)));
+        out.push('<mark' + (i === current ? ' class="current"' : '') + '>'
+                 + escapeHtml(text.slice(s, s + n)) + '</mark>');
+        last = s + n;
+      }
+      out.push(escapeHtml(text.slice(last)));
+      backdrop.innerHTML = out.join('');
+      syncBackdrop();
+    }
+    function syncBackdrop() {
+      backdrop.scrollTop = editor.scrollTop;
+      backdrop.scrollLeft = editor.scrollLeft;
+    }
+    editor.addEventListener('scroll', syncBackdrop, { passive: true });
+    // Keep matches + highlights current while editing with the bar open
+    // (recompute(true) keeps the current match; no scroll jump while typing).
+    editor.addEventListener('input', function () {
+      if (!bar.hidden) recompute(true);
+    });
+
+    // Scroll the current match into view using its real rendered position in
+    // the backdrop — exact even with soft-wrapped lines (a line-count estimate
+    // is not).
+    function scrollToCurrent() {
+      var m = backdrop.querySelector('mark.current');
+      if (!m) return;
+      editor.scrollTop = Math.max(0, m.offsetTop - editor.clientHeight / 2);
+      editor.scrollLeft = Math.max(0, m.offsetLeft - editor.clientWidth / 2);
+      syncBackdrop();
     }
     function selectCurrent() {
-      if (current < 0 || !matches.length) { refreshCount(); return; }
+      if (current < 0 || !matches.length) { refreshCount(); renderHighlights(); return; }
       var start = matches[current], end = start + findInput.value.length;
       editor.setSelectionRange(start, end);   // sets the selection; focus stays in find field
-      scrollToOffset(start);
+      renderHighlights();
+      scrollToCurrent();
       refreshCount();
     }
     function step(delta) {
@@ -677,11 +747,17 @@ const MD = __MARKDOWN__;
       recompute(false);
     }
 
+    /// Expand/collapse the replace controls (also reachable via the ▸ toggle).
+    function setReplaceMode(on) {
+      bar.classList.toggle('replace-mode', !!on);
+      modeBtn.textContent = on ? '▾' : '▸';
+      modeBtn.setAttribute('aria-pressed', String(!!on));
+    }
     function open(replaceMode) {
       // Find needs the editor visible; switch out of Preview-only mode.
       if (body.getAttribute('data-mode') === 'preview') setMode('edit');
       bar.hidden = false;
-      bar.classList.toggle('replace-mode', !!replaceMode);
+      setReplaceMode(replaceMode);
       // Seed the find field with any current editor selection.
       var sel = editor.value.substring(editor.selectionStart, editor.selectionEnd);
       if (sel && sel.indexOf('\n') === -1) findInput.value = sel;
@@ -690,10 +766,14 @@ const MD = __MARKDOWN__;
       recompute(false);
       selectCurrent();
     }
-    function close() { bar.hidden = true; editor.focus(); }
+    function close() { bar.hidden = true; backdrop.innerHTML = ''; editor.focus(); }
     // Escape is a WinForms dialog key: the WebView host receives it instead of
     // the page, so the native side calls this hook to close the find bar.
     window.__escape = function () { if (!bar.hidden) close(); };
+    modeBtn.addEventListener('click', function () {
+      setReplaceMode(!bar.classList.contains('replace-mode'));
+      findInput.focus();
+    });
 
     window.__find = function () { open(false); };
     window.__findReplace = function () { open(true); };

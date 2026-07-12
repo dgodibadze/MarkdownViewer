@@ -22,20 +22,7 @@ Relative images resolve against the file's own folder:
 
 Hover any block for the copy button — it grabs exactly what's between the fences.
 
-```swift
-/// One window controller per open document.
-final class ViewerWindowController: NSWindowController {
-    private(set) var fileURL: URL?
 
-    var displayName: String { fileURL?.lastPathComponent ?? "Untitled" }
-
-    func save(completion: ((Bool) -> Void)? = nil) {
-        webView.evaluateJavaScript("window.__getText()") { result, _ in
-            // Always write the live editor text — never a stale cache.
-        }
-    }
-}
-```
 
 ```js
 // Driver-pane scroll sync: only the pane the user is actually

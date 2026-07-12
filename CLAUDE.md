@@ -26,9 +26,10 @@ code blocks. It is fully offline — the AI assistant was removed in v1.2.
 - **`windows/Program.cs`** — the native Windows port (C# + WinForms + WebView2),
   a behavioral mirror of `main.swift`. **Any behavior change in `main.swift`
   must be mirrored there**, and `windows/Resources/template.html` is
-  *regenerated* from the Mac template plus a fixed delta (bridge, fonts,
-  Ctrl labels, in-page shortcut block, `__escape` hook — see DESIGN.md ▸
-  Platform support). Never hand-edit only one template.
+  *regenerated* from the Mac template by `windows/regen-template.py` (bridge,
+  fonts, Ctrl labels, in-page shortcut block, `__escape` hook — see DESIGN.md ▸
+  Platform support). Never hand-edit the Windows template; after changing the
+  Mac template, run `python3 windows/regen-template.py`.
 
 Everything else (Info.plist, build.sh, Icon/, dmg/, install.*) is packaging.
 
@@ -138,7 +139,15 @@ Both have caught real errors. They do not replace an actual build.
    answer. Before this, File ▸ Save on an unedited document wrote "" and wiped
    the file. Quit uses `.terminateLater` so async saves finish before exit.
 
-9. **The template ships a CSP + sanitizer** (rendered markdown is untrusted
+9. **The find-highlight backdrop must mirror the editor's metrics EXACTLY.**
+   An unfocused textarea never paints its selection, so find matches render as
+   `<mark>`s on a backdrop div behind the (transparent-background) editor.
+   Font, size, padding, wrap, border, tab-size AND `overflow: scroll` (not
+   auto — scrollbar width changes the content width and shifts wrap points)
+   are shared in one CSS rule for `.editor, .editor-backdrop`. Touch one
+   metric without the other and highlights drift off the text.
+
+10. **The template ships a CSP + sanitizer** (rendered markdown is untrusted
    HTML). New in-page features that need network access or remote scripts will
    be blocked by `connect-src 'none'` / `script-src file: 'unsafe-inline'` —
    that's deliberate; route anything network-shaped through the Swift bridge.

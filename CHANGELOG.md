@@ -5,6 +5,32 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [1.4] — 2026-07-12
+
+### Fixed
+
+- **Find matches are now actually visible.** The editor is a `<textarea>`,
+  which never paints its selection while unfocused — and focus deliberately
+  stays in the find field while you type — so "1/3" showed in the bar but
+  nothing was highlighted in the document. Matches are now rendered on a
+  metric-identical backdrop layer behind the editor: every hit gets a soft
+  highlight and the current one a strong one (theme-aware `--find-hit` /
+  `--find-hit-current` colors, light and dark).
+- **Jumping to a match scrolls precisely**, even with soft-wrapped lines — the
+  scroll position comes from the highlight's real rendered position instead of
+  a newline-count estimate. Horizontal scroll works with Wrap Lines off too.
+- **Highlights stay live while editing** with the find bar open (they
+  recompute on every keystroke instead of going stale).
+
+### Added
+
+- **Replace is reachable from the find bar itself.** A `▸` toggle at the left
+  of the bar expands the Replace field and buttons — previously the only way
+  in was the Edit ▸ Find and Replace menu item, so `⌘F` users never saw it.
+- `windows/regen-template.py` — the Windows template is now regenerated from
+  the shared Mac template by a checked-in script (it was a one-off before), so
+  the two can't silently drift. Both templates carry all of the above.
+
 ## [1.3] — 2026-07-12
 
 ### Added

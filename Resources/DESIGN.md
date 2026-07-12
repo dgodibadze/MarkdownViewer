@@ -91,7 +91,14 @@ triggers the same re-render manually, confirming first if edits would be lost.
 - **Find & Replace** operates on the raw markdown with a case-insensitive
   regex on the *original* string (lowercasing a copy shifts offsets for
   characters whose lowercase form changes length). Focus stays in the find
-  field while matches are selected and scrolled into view.
+  field while you type — and since an unfocused `<textarea>` never paints its
+  selection, matches are shown on a **backdrop layer** behind the editor: a
+  div carrying the same text with `<mark>`s (all hits soft, current hit
+  strong). The backdrop must share the editor's *exact* metrics — font, size,
+  padding, wrap mode, border, `overflow: scroll` with equal scrollbar width —
+  or highlights drift; both live in one CSS rule. Scroll-to-match uses the
+  mark's real rendered position, so it's exact under soft wrap. The `▸`
+  toggle in the bar expands the Replace controls (also via ⌥⌘F / Ctrl+H).
 - **Scroll sync (Split mode)** uses a driver-pane model: only the pane claimed
   by real input (`wheel`/`mousedown`/`touchstart`/`keydown`/`focusin`)
   propagates its scroll, plus a 1px write threshold. Timer/flag guards are
@@ -147,9 +154,10 @@ git history before the v1.2 commit.
   this document (same bridge actions, same save/dirty invariants, same
   security model).
 - **Keeping the two in sync**: `windows/Resources/template.html` is
-  *regenerated* from the Mac `Resources/template.html` plus a small fixed
-  delta (message bridge chrome.webview-first, Windows font stacks, Ctrl
-  shortcut labels, an in-page app-shortcut block, and a `window.__escape`
-  hook). Never hand-edit only one template — change the Mac one, re-apply the
-  delta. Behavior changes in `main.swift` must be mirrored in
+  *regenerated* from the Mac `Resources/template.html` by
+  **`windows/regen-template.py`** (delta: message bridge chrome.webview-first,
+  Windows font stacks, Ctrl shortcut labels, an in-page app-shortcut block,
+  and a `window.__escape` hook). Never hand-edit the Windows template —
+  change the Mac one and re-run the script (it fails loudly if an anchor
+  drifted). Behavior changes in `main.swift` must be mirrored in
   `windows/Program.cs` and vice versa.
