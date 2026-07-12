@@ -5,6 +5,15 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.3] — 2026-07-12
+
+### Added
+
+- **Intel Mac support.** The build now compiles both `arm64` and `x86_64`
+  slices (macOS 11+) and merges them with `lipo` into a universal binary, so
+  the same `.app`/DMG runs natively on Apple Silicon and Intel. If one slice
+  can't be compiled on the build machine, the script warns and ships the other.
+
 ## [2.2] — 2026-07-12
 
 ### Changed
