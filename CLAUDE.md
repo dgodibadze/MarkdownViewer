@@ -161,6 +161,15 @@ Both have caught real errors. They do not replace an actual build.
    session). Quit the app (osascript / killall) before `rm -rf && cp -R`;
    `install.sh` does this automatically.
 
+12. **Never put a side-effecting call inside an optional-chained call's
+   arguments.** `completion?(writeToDisk())` does NOT call `writeToDisk()` when
+   `completion` is nil — Swift short-circuits the *entire* postfix expression,
+   arguments included. This shipped as the real "Save button does nothing" bug:
+   the toolbar button and ⌘S call `save()` with no completion, so the write was
+   skipped, while the close/quit dialog (which passes a completion) saved fine.
+   Compute the side effect into a `let` first, then call the optional. The same
+   trap applies to `delegate?.method(sideEffect())` in C#.
+
 ## Conventions
 
 - Single-file-per-concern: don't split `main.swift` or `template.html` without a

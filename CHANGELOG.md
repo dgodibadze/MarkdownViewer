@@ -9,13 +9,19 @@ Versions bump by 0.1 per release batch.
 
 ### Fixed
 
-- **Every save trigger now behaves the same.** The toolbar Save button was
-  disabled whenever the app considered the document clean, while `⌘S`/`Ctrl+S`
-  and File ▸ Save saved unconditionally — so the button sometimes "did
-  nothing", and a brand-new Untitled document couldn't be saved from the
-  toolbar at all. The button is now always enabled and always saves (the dot
-  on it is the unsaved-changes indicator); the in-page `⌘S` handler dropped
-  the same stale dirty-gate.
+- **Save actually writes to disk now.** The toolbar Save button and `⌘S` never
+  wrote the file — only the Save button in the close/quit dialog did. The cause
+  was a Swift optional-chaining trap: `save()` ended with
+  `completion?(writeToDisk())`, and when `completion` is `nil` (which it is for
+  the toolbar button and `⌘S`) the `?` short-circuits the **whole** expression,
+  so `writeToDisk()` was never even called. Only the close/quit path passes a
+  completion closure, so that was the one save that worked — which is exactly
+  what it looked like. The write is now computed before the optional call.
+- **Every save trigger behaves the same.** The toolbar Save button used to be
+  disabled whenever the app considered the document clean, while `⌘S` and
+  File ▸ Save acted unconditionally. The button is now always enabled and always
+  saves (the dot on it is the unsaved-changes indicator); the in-page `⌘S`
+  handler dropped the same stale dirty-gate.
 - **File ▸ Save works while the About window is focused** — the menu now falls
   back to the main document window instead of silently doing nothing when a
   non-document window is key.

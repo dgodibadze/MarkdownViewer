@@ -266,7 +266,13 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
             if self.fileURL == nil {
                 self.saveAs(completion: completion)
             } else {
-                completion?(self.writeToDisk())
+                // NOTE: compute the write FIRST, then call the optional
+                // completion. `completion?(writeToDisk())` short-circuits the
+                // whole expression when completion is nil — so the toolbar Save
+                // button and ⌘S (which pass no completion) never wrote at all,
+                // while the close/quit dialog (which passes one) did.
+                let ok = self.writeToDisk()
+                completion?(ok)
             }
         }
     }
