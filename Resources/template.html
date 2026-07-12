@@ -445,6 +445,32 @@ const MD = __MARKDOWN__;
   // always get the live editor text, never a stale/empty cached copy.
   window.__getText = function () { return editor.value; };
 
+  // ---- Programmatic edits ----
+  // Replace [start, end) in the editor with `text` WITHOUT destroying the
+  // native undo stack — assigning editor.value wipes it, execCommand is the
+  // only undo-preserving programmatic edit for a textarea in WebKit. Used by
+  // Tab-inserts-spaces, Find & Replace, and the AI insert/improve actions.
+  // execCommand acts on the focused element, so focus hops to the editor and
+  // back (Replace runs while focus is in the find bar).
+  function spliceEditor(start, end, text) {
+    if (start === end && !text) return;
+    var prevFocus = document.activeElement;
+    if (prevFocus !== editor) editor.focus();
+    editor.setSelectionRange(start, end);
+    var ok = false;
+    try {
+      ok = text ? document.execCommand('insertText', false, text)
+                : document.execCommand('delete', false, null);
+    } catch (e) {}
+    if (!ok) {
+      // Fallback: direct splice (loses undo, but never loses the edit).
+      editor.value = editor.value.slice(0, start) + text + editor.value.slice(end);
+      editor.setSelectionRange(start + text.length, start + text.length);
+      editor.dispatchEvent(new Event('input'));   // execCommand fires this natively
+    }
+    if (prevFocus && prevFocus !== editor && prevFocus.focus) prevFocus.focus();
+  }
+
   // ---- Editing ----
   var renderTimer = null, changeTimer = null;
   editor.addEventListener('input', function () {
@@ -459,10 +485,7 @@ const MD = __MARKDOWN__;
   editor.addEventListener('keydown', function (e) {
     if (e.key === 'Tab') {
       e.preventDefault();
-      var s = editor.selectionStart, en = editor.selectionEnd;
-      editor.value = editor.value.slice(0, s) + '  ' + editor.value.slice(en);
-      editor.selectionStart = editor.selectionEnd = s + 2;
-      editor.dispatchEvent(new Event('input'));
+      spliceEditor(editor.selectionStart, editor.selectionEnd, '  ');
     }
   });
 
@@ -632,8 +655,7 @@ const MD = __MARKDOWN__;
     function replaceCurrent() {
       if (current < 0 || !matches.length) return;
       var start = matches[current], end = start + findInput.value.length;
-      editor.value = editor.value.slice(0, start) + replaceInput.value + editor.value.slice(end);
-      editor.dispatchEvent(new Event('input'));   // updates preview + dirty state
+      spliceEditor(start, end, replaceInput.value);   // undo-preserving; fires input
       recompute(false);
       // Move selection to the next match at/after the edit point.
       if (matches.length) {
@@ -652,8 +674,7 @@ const MD = __MARKDOWN__;
         last = occ[k] + term.length;
       }
       out += editor.value.slice(last);
-      editor.value = out;
-      editor.dispatchEvent(new Event('input'));
+      spliceEditor(0, editor.value.length, out);   // one whole-document splice = one undo step
       recompute(false);
     }
 
@@ -732,9 +753,8 @@ const MD = __MARKDOWN__;
       var instr = prompt('How should I revise the selection?', 'Improve clarity and fix grammar');
       if (instr === null) return;
       request('improve', { selection: sel, prompt: instr }).then(function (text) {
-        editor.value = editor.value.slice(0, s) + text + editor.value.slice(e);
+        spliceEditor(s, e, text);
         editor.setSelectionRange(s, s + text.length);
-        editor.dispatchEvent(new Event('input'));
       }).catch(function (err) { alert('AI error: ' + err.message); });
     };
 
@@ -745,9 +765,8 @@ const MD = __MARKDOWN__;
       if (!instr) return;
       var pos = editor.selectionStart;
       request('generate', { prompt: instr }).then(function (text) {
-        editor.value = editor.value.slice(0, pos) + text + editor.value.slice(pos);
+        spliceEditor(pos, pos, text);
         editor.setSelectionRange(pos, pos + text.length);
-        editor.dispatchEvent(new Event('input'));
       }).catch(function (err) { alert('AI error: ' + err.message); });
     };
 

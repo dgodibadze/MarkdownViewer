@@ -5,6 +5,18 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.6] — 2026-07-12
+
+### Fixed
+
+- **Undo survived nothing.** Tab-inserts-spaces, Replace / Replace All, and the
+  AI insert/improve actions all rewrote `editor.value`, which wipes the
+  textarea's native undo stack — one Tab press and ⌘Z was dead. All programmatic
+  edits now go through a shared `spliceEditor()` helper built on
+  `document.execCommand('insertText')`, which WebKit records as a normal
+  undoable edit (Replace All is a single undo step). Falls back to the old
+  direct splice if `execCommand` is unavailable.
+
 ## [1.5] — 2026-07-12
 
 ### Fixed
