@@ -37,11 +37,11 @@
 <style>
   :root[data-theme="light"] {
     --bg: #ffffff; --surface: #f6f8fa; --text: #1f2328; --muted: #59636e;
-    --border: #d1d9e0; --accent: #0969da;
+    --border: #d1d9e0; --accent: #0969da; --success: #1a7f37;
   }
   :root[data-theme="dark"] {
     --bg: #0d1117; --surface: #161b22; --text: #e6edf3; --muted: #9198a1;
-    --border: #30363d; --accent: #4493f8;
+    --border: #30363d; --accent: #4493f8; --success: #3fb950;
   }
   html, body {
     height: 100%; margin: 0; padding: 0; overflow: hidden;
@@ -238,7 +238,7 @@
   }
   .markdown-body pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
   .copy-btn:hover { color: var(--text); border-color: var(--accent); }
-  .copy-btn.copied { color: #1a7f37; border-color: #1a7f37; }
+  .copy-btn.copied { color: var(--success); border-color: var(--success); }
   .copy-btn svg { width: 13px; height: 13px; display: block; }
   .copy-btn .ico-check { display: none; }
   .copy-btn.copied .ico-copy { display: none; }
@@ -636,12 +636,17 @@ const MD = __MARKDOWN__;
     var caseSensitive = false;
 
     function findAll(hay, needle) {
+      // Regex on the ORIGINAL string: lowercasing the haystack for comparison
+      // shifts offsets for characters whose lowercase form changes length
+      // (e.g. Turkish İ), which would corrupt Replace.
       var res = [];
       if (!needle) return res;
-      var h = caseSensitive ? hay : hay.toLowerCase();
-      var n = caseSensitive ? needle : needle.toLowerCase();
-      var i = h.indexOf(n);
-      while (i !== -1) { res.push(i); i = h.indexOf(n, i + n.length); }
+      var re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+      var m;
+      while ((m = re.exec(hay)) !== null) {
+        res.push(m.index);
+        if (re.lastIndex === m.index) re.lastIndex++;
+      }
       return res;
     }
     function refreshCount() {

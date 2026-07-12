@@ -5,6 +5,24 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.2] — 2026-07-12
+
+### Changed
+
+- **Updated default AI models** to current generations: OpenAI `gpt-5.1`,
+  Anthropic `claude-sonnet-5`, Gemini `gemini-2.5-flash` (still user-editable
+  per provider in AI ▸ Settings…; existing overrides are untouched).
+- The code-block "Copied" green is now a `--success` theme variable (brighter
+  in dark mode) instead of a hardcoded color.
+- Open panel uses the modern `allowedContentTypes` API instead of the
+  deprecated `allowedFileTypes` (removes the last build warning).
+
+### Fixed
+
+- **Find matches by regex on the original text** instead of lowercasing the
+  whole document for comparison — offsets could drift (corrupting Replace) on
+  characters whose lowercase form changes length, e.g. Turkish `İ`.
+
 ## [2.1] — 2026-07-12
 
 ### Fixed

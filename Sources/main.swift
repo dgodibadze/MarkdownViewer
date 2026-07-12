@@ -1,6 +1,7 @@
 import Cocoa
 import WebKit
 import Security
+import UniformTypeIdentifiers
 
 // MARK: - AI providers, Keychain, networking
 
@@ -22,11 +23,11 @@ let AI_PROVIDERS: [AIProvider] = [
     AIProvider(id: "nous",      name: "Nous Portal", kind: .openai,
                defaultBaseURL: "https://inference-api.nousresearch.com/v1", defaultModel: "Hermes-3-Llama-3.1-70B"),
     AIProvider(id: "openai",    name: "OpenAI",      kind: .openai,
-               defaultBaseURL: "https://api.openai.com/v1",               defaultModel: "gpt-4o"),
+               defaultBaseURL: "https://api.openai.com/v1",               defaultModel: "gpt-5.1"),
     AIProvider(id: "anthropic", name: "Anthropic",   kind: .anthropic,
-               defaultBaseURL: "https://api.anthropic.com",               defaultModel: "claude-3-5-sonnet-latest"),
+               defaultBaseURL: "https://api.anthropic.com",               defaultModel: "claude-sonnet-5"),
     AIProvider(id: "gemini",    name: "Gemini",      kind: .gemini,
-               defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", defaultModel: "gemini-1.5-flash"),
+               defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", defaultModel: "gemini-2.5-flash"),
 ]
 
 struct ChatMessage { let role: String; let content: String }   // role: "user" | "assistant"
@@ -714,7 +715,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.allowedFileTypes = ["md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "markdn", "mdtxt", "text", "rmd", "qmd", "mdx", "mdc"]
+        panel.allowedContentTypes = ["md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "markdn", "mdtxt", "text", "rmd", "qmd", "mdx", "mdc"]
+            .compactMap { UTType(filenameExtension: $0) } + [.plainText]
         if panel.runModal() == .OK {
             for url in panel.urls { openFile(url) }
         }
