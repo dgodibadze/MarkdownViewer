@@ -217,10 +217,14 @@ enum Renderer {
         // Markdown file's directory for resolving relative images/links.
         let baseDir = markdownFile.deletingLastPathComponent().absoluteString
 
+        // __MARKDOWN__ must be substituted LAST: it injects arbitrary document
+        // text, and any token replaced after it would also match occurrences of
+        // that token *inside* the document (e.g. a markdown file that mentions
+        // "__TITLE__" literally would get corrupted).
         template = template.replacingOccurrences(of: "__RES__", with: resDir)
         template = template.replacingOccurrences(of: "__BASE__", with: baseDir)
-        template = template.replacingOccurrences(of: "__MARKDOWN__", with: jsStringLiteral(mdText))
         template = template.replacingOccurrences(of: "__TITLE__", with: htmlEscape(markdownFile.lastPathComponent))
+        template = template.replacingOccurrences(of: "__MARKDOWN__", with: jsStringLiteral(mdText))
 
         // Ensure the temp directory exists, then write. Report the real error.
         do {

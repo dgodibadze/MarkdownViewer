@@ -5,6 +5,16 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.4] — 2026-07-12
+
+### Fixed
+
+- **Documents containing the literal text `__TITLE__` rendered corrupted.** The
+  template substituted the markdown body *before* the title token, so any
+  `__TITLE__` inside the document itself was then replaced with the filename
+  (this repo's own CLAUDE.md triggered it). `__MARKDOWN__` is now always the
+  last token substituted.
+
 ## [1.3] — 2026-07-12
 
 ### Fixed
