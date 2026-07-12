@@ -5,6 +5,17 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.5] — 2026-07-12
+
+### Fixed
+
+- **In-document anchor links (`[Jump](#section)`) now work.** They were doubly
+  broken: marked v12 no longer generates heading ids, and the `<base href>` used
+  for relative images made `#section` resolve against the file's *directory*,
+  navigating the view away from the document. The preview now assigns
+  GitHub-style slug ids to headings (deduped `-1`, `-2`, …) and intercepts
+  fragment clicks to smooth-scroll in place.
+
 ## [1.4] — 2026-07-12
 
 ### Fixed

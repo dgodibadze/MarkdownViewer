@@ -347,8 +347,34 @@ const MD = __MARKDOWN__;
         try { hljs.highlightElement(b); } catch (e) {}
       });
     }
+    addHeadingIds(content);
     addCopyButtons(content);
   }
+
+  // ---- In-document anchor links ----
+  // marked v12 emits no heading ids, and the <base href> (needed for relative
+  // images) makes "#x" resolve against the file's directory and navigate away.
+  // So: generate GitHub-style ids ourselves and handle fragment clicks in-page.
+  function addHeadingIds(root) {
+    var used = {};
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(function (h) {
+      var slug = h.textContent.toLowerCase().trim()
+        .replace(/[^\w\- ]+/g, '')
+        .replace(/\s+/g, '-') || 'section';
+      if (used.hasOwnProperty(slug)) { used[slug]++; slug = slug + '-' + used[slug]; }
+      else { used[slug] = 0; }
+      h.id = slug;
+    });
+  }
+  content.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a') : null;
+    if (!a || !content.contains(a)) return;
+    var href = a.getAttribute('href') || '';
+    if (href.charAt(0) !== '#') return;
+    e.preventDefault();
+    var el = document.getElementById(decodeURIComponent(href.slice(1)));
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 
   // ---- Copy button on each code block (copies everything between ``` and ```) ----
   var COPY_ICON = '<svg class="ico-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"/></svg>';
