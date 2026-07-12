@@ -800,11 +800,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         closeItem.target = nil
         fileMenuItem.submenu = fileMenu
 
-        // Edit menu (so copy/select-all work in the web view)
+        // Edit menu. These items exist so their Cmd key equivalents reach the
+        // first responder (the web view / its textarea). Without a menu item
+        // declaring the shortcut, macOS never dispatches it — which is why
+        // Cut and Paste silently did nothing before.
         let editMenuItem = NSMenuItem()
         mainMenu.addItem(editMenuItem)
         let editMenu = NSMenu(title: "Edit")
+
+        editMenu.addItem(withTitle: "Undo", action: NSSelectorFromString("undo:"), keyEquivalent: "z")
+        let redoItem = editMenu.addItem(withTitle: "Redo", action: NSSelectorFromString("redo:"), keyEquivalent: "z")
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(NSMenuItem.separator())
+
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editMenu.addItem(NSMenuItem.separator())
         editMenu.addItem(withTitle: "Find…", action: #selector(performFind(_:)), keyEquivalent: "f")

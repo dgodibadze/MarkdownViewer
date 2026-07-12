@@ -461,18 +461,34 @@ const MD = __MARKDOWN__;
   });
 
   // ---- Synced scrolling (Split mode) + preview scroll persistence ----
-  var isSyncing = false;
+  //
+  // Only the pane the user is actually driving propagates its scroll. A
+  // time-based guard does NOT work here: writing dst.scrollTop fires dst's
+  // scroll event asynchronously, often after a requestAnimationFrame guard has
+  // already cleared, so the echo syncs back with sub-pixel rounding error and
+  // the two panes ratchet each other along on their own. Tracking the driver
+  // pane by real input events (wheel / drag / keys / focus) removes the loop
+  // entirely, and the 1px threshold stops fractional churn.
+  var driver = null;
+  function claim(pane) { return function () { driver = pane; }; }
+  ['wheel', 'mousedown', 'touchstart', 'keydown', 'focusin'].forEach(function (evt) {
+    editor.addEventListener(evt, claim(editor), { passive: true });
+    preview.addEventListener(evt, claim(preview), { passive: true });
+  });
+
   function syncScroll(src, dst) {
-    if (isSyncing) return;
     if (body.getAttribute('data-mode') !== 'split') return;
-    isSyncing = true;
+    if (driver && driver !== src) return;   // this is an echo from the passive pane — ignore
     var srcVMax = src.scrollHeight - src.clientHeight;
     var dstVMax = dst.scrollHeight - dst.clientHeight;
-    dst.scrollTop = srcVMax > 0 ? (src.scrollTop / srcVMax) * dstVMax : 0;
+    var top = srcVMax > 0 ? (src.scrollTop / srcVMax) * dstVMax : 0;
+    if (Math.abs(dst.scrollTop - top) > 1) dst.scrollTop = top;
     var srcHMax = src.scrollWidth - src.clientWidth;
     var dstHMax = dst.scrollWidth - dst.clientWidth;
-    if (srcHMax > 0) dst.scrollLeft = (src.scrollLeft / srcHMax) * dstHMax;
-    requestAnimationFrame(function () { isSyncing = false; });
+    if (srcHMax > 0) {
+      var left = (src.scrollLeft / srcHMax) * dstHMax;
+      if (Math.abs(dst.scrollLeft - left) > 1) dst.scrollLeft = left;
+    }
   }
   editor.addEventListener('scroll', function () {
     syncScroll(editor, preview);

@@ -1,0 +1,82 @@
+# Changelog
+
+All notable changes to MarkdownViewer are documented here.
+
+Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+This project follows [Semantic Versioning](https://semver.org/).
+
+## [1.0] — 2026-07-12
+
+### Added
+
+- **File ▸ Open Path… (⇧⌘G).** Open a document by typing or pasting an absolute
+  path (e.g. `/Users/James/USER.md`) instead of navigating the Finder open panel.
+  Pre-fills from the clipboard when it already holds a path, expands `~`, accepts
+  `file://` URLs, and tolerates quoted or backslash-escaped paths copied from a
+  terminal. Shows a "File not found" alert rather than failing silently.
+
+- **Copy button on fenced code blocks.** Each code block in the preview gets a
+  hover button in its top-right corner that copies exactly the text between the
+  ``` fences. Shows a "Copied" check for 1.5s. Falls back to a hidden textarea and
+  `document.execCommand('copy')` because `navigator.clipboard` is not reliably
+  permitted in a `file://` WKWebView.
+
+- **Document zoom.** `Cmd +` / `Cmd -` to resize text, `Cmd 0` to reset. Scales
+  both the preview and the editor, clamped to 0.6x–2.6x, and persisted across
+  reloads and sessions. Deliberately no toolbar buttons — the UI stays minimalist.
+
+- **App icon.** Bundled `Icon/AppIcon.icns` (blue squircle with the markdown M↓
+  mark), wired into the build via `CFBundleIconFile`.
+
+- **Installer DMG.** `make-dmg.sh` builds a `MarkdownViewer.dmg` with a
+  drag-to-Applications layout and a custom background image.
+
+- **`CLAUDE.md`.** Handoff notes covering architecture, the build loop, and the
+  root causes of the bugs below, so future sessions don't rediscover them.
+
+### Changed
+
+- **Zoom now scales the text column, not just the font.** Previously the preview
+  column was pinned at 980px, so larger fonts meant fewer characters per line and
+  more wrapping. The column's `max-width` and side padding now scale by the same
+  `--zoom` factor as the font, keeping characters-per-line constant — the content
+  simply gets bigger rather than reflowing.
+
+### Fixed
+
+- **Cut, Paste, Undo and Redo did nothing.** macOS only dispatches a Cmd key
+  equivalent to the first responder if some menu item declares that shortcut. The
+  Edit menu only carried Copy and Select All, so ⌘X and ⌘V were dead keys. Added
+  the full standard Edit menu (Undo, Redo, Cut, Copy, Paste, Delete, Select All)
+  targeting the responder chain.
+
+- **Split panes scrolled slowly on their own.** The editor/preview scroll sync used
+  an `isSyncing` flag cleared on the next `requestAnimationFrame`. That guard is
+  unsound: writing `dst.scrollTop` fires the destination's `scroll` event
+  asynchronously, often after the frame has already cleared the flag. The echo then
+  synced back with sub-pixel rounding error (the panes have different
+  `scrollHeight`), nudging the source and re-firing — the two panes ratcheted each
+  other along indefinitely. Replaced the timing guard with a driver-pane model: the
+  pane claimed by real input (`wheel`/`mousedown`/`touchstart`/`keydown`/`focusin`)
+  is the only one whose scroll propagates, plus a 1px write threshold.
+
+- **Misleading "Could not read \<file\>" error.** `Renderer.render()` returned a bare
+  `false` on any failure, so the UI blamed the markdown file even when the real
+  failure was writing the temp render file or locating the bundled template. It now
+  returns a descriptive error string that the web view displays, and it creates the
+  temp directory immediately before writing.
+
+## [0.9] — 2026-06-19 (initial release)
+
+### Added
+
+- Initial standalone macOS viewer: opens `.md` files in a real window on
+  double-click instead of only the Quick Look preview.
+- Rendering via bundled `marked` + `highlight.js` with GitHub-style CSS, fully
+  offline after the first build.
+- Light / Dark / System theme toggle, following the OS in System mode.
+- Live reload on file change, preserving scroll position.
+- Multiple files open as native window tabs.
+- Preview / Edit / Split modes, save, find & replace, and an AI chat panel.
+- Hand-rolled `build.sh` (no Xcode project): compiles with `swiftc`, assembles and
+  ad-hoc signs the `.app`, and registers it with Launch Services.

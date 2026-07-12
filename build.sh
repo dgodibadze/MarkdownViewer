@@ -43,7 +43,7 @@ cp "$RES"/template.html \
    "$RES"/marked.min.js "$RES"/highlight.min.js \
    "$RES"/github-markdown-light.css "$RES"/github-markdown-dark.css \
    "$RES"/hljs-github-light.css "$RES"/hljs-github-dark.css \
-   "$RES"/CHANGELOG.md "$RES"/ARCHITECTURE.md \
+   CHANGELOG.md "$RES"/ARCHITECTURE.md \
    "$APP/Contents/Resources/"
 # App icon (optional; ignored if missing)
 [ -f Icon/AppIcon.icns ] && cp Icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" || true
