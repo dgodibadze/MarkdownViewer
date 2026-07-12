@@ -25,9 +25,9 @@ find & replace — 100% offline.
 
 <table>
   <tr>
-    <td align="center"><img src="docs/screenshots/preview-dark.png" alt="Dark preview with syntax-highlighted code"><br><sub><b>Dark theme</b> · highlighted code with copy buttons</sub></td>
-    <td align="center"><img src="docs/screenshots/find-replace.png" alt="Find and replace bar"><br><sub><b>Find & Replace</b> · match count, case toggle</sub></td>
-    <td align="center"><img src="docs/screenshots/about.png" alt="About window"><br><sub><b>About</b> · changelog & design docs built in</sub></td>
+    <td align="center"><img src="docs/screenshots/preview-dark.png" alt="Dark theme with syntax-highlighted code"><br><sub><b>Dark theme</b> · highlighted code with copy buttons</sub></td>
+    <td align="center"><img src="docs/screenshots/find-replace.png" alt="Find and replace bar with highlighted matches"><br><sub><b>Find &amp; Replace</b> · live match highlights, count &amp; case toggle</sub></td>
+    <td align="center"><img src="docs/screenshots/about.png" alt="About window"><br><sub><b>About</b> · changelog &amp; design docs built in</sub></td>
   </tr>
 </table>
 
