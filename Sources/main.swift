@@ -139,7 +139,10 @@ final class AIService {
             let msgs = prompt.messages.map { ["role": $0.role, "content": $0.content] }
             json = ["model": mdl, "max_tokens": 2048, "system": prompt.system, "messages": msgs]
         case .gemini:
-            req = URLRequest(url: try endpoint("/models/\(mdl):generateContent?key=\(key)"))
+            // Key goes in a header, never the URL — query strings end up in
+            // proxy/server logs.
+            req = URLRequest(url: try endpoint("/models/\(mdl):generateContent"))
+            req.setValue(key, forHTTPHeaderField: "x-goog-api-key")
             let contents = prompt.messages.map { m -> [String: Any] in
                 ["role": m.role == "assistant" ? "model" : "user", "parts": [["text": m.content]]]
             }

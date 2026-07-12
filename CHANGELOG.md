@@ -5,6 +5,14 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.9] — 2026-07-12
+
+### Security
+
+- **Gemini API key no longer travels in the URL.** It was appended as a
+  `?key=` query parameter, which any proxy or server access log would capture.
+  It's now sent in the `x-goog-api-key` request header.
+
 ## [1.8] — 2026-07-12
 
 ### Fixed
