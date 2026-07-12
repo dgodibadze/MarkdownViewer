@@ -77,14 +77,14 @@ sub("""  // Cmd/Ctrl+S saves.
   document.addEventListener('keydown', function (e) {
     if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
-      if (dirty) save();
+      save();
     }
   });""",
     """  // Ctrl+S saves.
   document.addEventListener('keydown', function (e) {
     if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
-      if (dirty) save();
+      save();
     }
   });
 

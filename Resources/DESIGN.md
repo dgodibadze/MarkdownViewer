@@ -72,6 +72,14 @@ After a successful write, Swift calls `window.__onSaved()` (clears the dirty
 flag) and refreshes its stored modification date so its own write doesn't
 trigger the live-reload watcher.
 
+**Every save trigger behaves identically** — the toolbar Save button, `⌘S` /
+`Ctrl+S`, and the File ▸ Save menu all save unconditionally, even when the
+document is clean (re-writing the same bytes is harmless; for an Untitled
+document it opens the save panel). The button is never disabled: gating it on
+the dirty flag made it the one trigger that could refuse while the menu path
+saved, which read as "the Save button doesn't work". The dirty **dot** on the
+button is the unsaved-changes indicator.
+
 ## Live reload
 
 Each controller polls the file's modification date once a second. A change

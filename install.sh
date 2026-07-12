@@ -21,6 +21,22 @@ case "$(uname -s)" in
 esac
 
 echo "Installing MarkdownViewer for macOS…"
+
+# Replacing the bundle under a RUNNING app leaves a zombie process: the window
+# keeps painting but its native bridge (Save, menus) silently dies. Ask a
+# running copy to quit first — gracefully, so unsaved documents still prompt.
+if pgrep -xq MarkdownViewer; then
+  echo "MarkdownViewer is running — asking it to quit…"
+  osascript -e 'tell application "MarkdownViewer" to quit' >/dev/null 2>&1 || true
+  i=0
+  while pgrep -xq MarkdownViewer && [ $i -lt 15 ]; do sleep 1; i=$((i+1)); done
+  if pgrep -xq MarkdownViewer; then
+    echo "MarkdownViewer is still open (unsaved changes?)."
+    echo "Please close it, then re-run this installer."
+    exit 1
+  fi
+fi
+
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

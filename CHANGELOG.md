@@ -5,6 +5,34 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [1.5] — 2026-07-12
+
+### Fixed
+
+- **Every save trigger now behaves the same.** The toolbar Save button was
+  disabled whenever the app considered the document clean, while `⌘S`/`Ctrl+S`
+  and File ▸ Save saved unconditionally — so the button sometimes "did
+  nothing", and a brand-new Untitled document couldn't be saved from the
+  toolbar at all. The button is now always enabled and always saves (the dot
+  on it is the unsaved-changes indicator); the in-page `⌘S` handler dropped
+  the same stale dirty-gate.
+- **File ▸ Save works while the About window is focused** — the menu now falls
+  back to the main document window instead of silently doing nothing when a
+  non-document window is key.
+- **The macOS installer quits a running copy before replacing it** (gracefully,
+  so unsaved documents still prompt; it aborts rather than force-kills).
+  Replacing the bundle under a running app left a "zombie" process whose
+  windows kept painting but whose Save/menus were dead — the likely culprit
+  behind "save stopped working" after an upgrade. The Windows installer
+  already stopped the running copy.
+
+### Changed
+
+- README: the "Why" section no longer makes claims about how the OS handles
+  `.md` files; the Install section now names the exact install destinations
+  (`/Applications` · `%LOCALAPPDATA%\Programs\MarkdownViewer`) and the manual
+  build section explains where the built app lands.
+
 ## [1.4] — 2026-07-12
 
 ### Fixed

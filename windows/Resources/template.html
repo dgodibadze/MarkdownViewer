@@ -79,7 +79,6 @@
     border: 1px solid var(--border); background: var(--bg); color: var(--text);
   }
   .save-btn:hover { border-color: var(--accent); }
-  .save-btn:disabled { opacity: .5; cursor: default; }
   .dirty-dot {
     width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
     display: none;
@@ -250,7 +249,7 @@
 
   <div class="spacer"></div>
 
-  <button class="save-btn" id="saveBtn" disabled>
+  <button class="save-btn" id="saveBtn">
     <span class="dirty-dot" aria-hidden="true"></span>
     <span>Save</span>
   </button>
@@ -430,12 +429,15 @@ const MD = __MARKDOWN__;
   }
 
   // ---- Dirty state ----
+  // The Save button stays enabled even when clean — clicking it re-writes the
+  // same bytes (harmless) or, for Untitled, opens the save panel. Gating it on
+  // dirty made it the only save trigger that could refuse while the File menu
+  // and Cmd/Ctrl+S happily saved. The dot is the unsaved-changes indicator.
   var dirty = false;
   function setDirty(d) {
     if (d === dirty) return;
     dirty = d;
     body.setAttribute('data-dirty', String(d));
-    saveBtn.disabled = !d;
     bridge({ action: 'dirty', dirty: d });
   }
 
@@ -512,7 +514,7 @@ const MD = __MARKDOWN__;
   document.addEventListener('keydown', function (e) {
     if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
-      if (dirty) save();
+      save();
     }
   });
 

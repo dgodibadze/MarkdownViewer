@@ -73,6 +73,7 @@ fragile `project.pbxproj`.
 ```bash
 cd ~/GitHub/MarkdownViewer
 ./build.sh                                             # fetch assets (first run), compile, bundle, ad-hoc sign, lsregister
+osascript -e 'tell application "MarkdownViewer" to quit' 2>/dev/null; sleep 1   # MUST quit first — see trap 11
 rm -rf /Applications/MarkdownViewer.app && cp -R MarkdownViewer.app /Applications/
 ```
 
@@ -152,6 +153,13 @@ Both have caught real errors. They do not replace an actual build.
    be blocked by `connect-src 'none'` / `script-src file: 'unsafe-inline'` —
    that's deliberate; route anything network-shaped through the Swift bridge.
    The sanitizer strips `on*` attributes from the preview after every render.
+
+11. **NEVER replace the /Applications bundle while the app is running.** The
+   old process keeps its windows painting, and `open -a` re-activates *that*
+   zombie instead of launching the new binary — but its bridge and menus
+   silently die (this presented as "Save does nothing" and burned a debugging
+   session). Quit the app (osascript / killall) before `rm -rf && cp -R`;
+   `install.sh` does this automatically.
 
 ## Conventions
 

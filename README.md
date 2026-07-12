@@ -35,11 +35,10 @@ find & replace — 100% offline.
 
 ## Why
 
-macOS only quick-looks `.md` files; Windows opens them in Notepad. MarkdownViewer
-gives them a real home: double-click → a rendered document in a native window,
-with just enough editor to fix a typo, tick a checkbox, and save — and nothing else.
-No Electron, no accounts, no network. One native source file per platform driving
-a system web view, ~700 lines each.
+MarkdownViewer gives `.md` files a real home: double-click → a rendered document
+in a native window, with just enough editor to fix a typo, tick a checkbox, and
+save — and nothing else. No Electron, no accounts, no network. One native source
+file per platform driving a system web view, ~700 lines each.
 
 ## Features
 
@@ -80,10 +79,13 @@ curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/inst
 irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.ps1 | iex
 ```
 
-The installers handle the rest: macOS gets the latest DMG from
-[Releases](../../releases) (or builds from source) into `/Applications`;
-Windows gets the self-contained build, the WebView2 Runtime if missing, and a
-Start Menu shortcut — no admin rights needed.
+The installers handle the rest — no admin rights needed, and a running copy is
+asked to quit before files are replaced:
+
+- **macOS** installs to **`/Applications/MarkdownViewer.app`** (latest DMG from
+  [Releases](../../releases), or built from source if none is published).
+- **Windows** installs to **`%LOCALAPPDATA%\Programs\MarkdownViewer`**, adds a
+  Start Menu shortcut, and fetches the WebView2 Runtime if it's missing.
 
 <details>
 <summary><b>Manual install & building from source</b></summary>
@@ -104,9 +106,13 @@ Requires the Xcode command line tools (`xcode-select --install`); internet on th
 ```bash
 git clone https://github.com/dgodibadze/MarkdownViewer.git
 cd MarkdownViewer
-./build.sh            # arm64 + x86_64 → MarkdownViewer.app
+./build.sh            # arm64 + x86_64 → MarkdownViewer.app (in this folder)
 ./make-dmg.sh         # optional: MarkdownViewer.dmg
 ```
+
+The build lands in the repo folder — drag `MarkdownViewer.app` to
+**Applications**, or: `cp -R MarkdownViewer.app /Applications/` (quit the old
+copy first if it's running).
 
 ### Windows — build
 

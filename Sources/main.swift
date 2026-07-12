@@ -562,9 +562,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         controllers.removeAll { $0.window === window }
     }
 
-    /// The controller backing the current key window, if any.
+    /// The controller backing the current key window — falling back to the main
+    /// window's controller when a non-document window (e.g. About) is key, so
+    /// File ▸ Save and friends never silently no-op.
     private func keyController() -> ViewerWindowController? {
-        return controllers.first(where: { $0.window?.isKeyWindow == true })
+        if let c = controllers.first(where: { $0.window?.isKeyWindow == true }) { return c }
+        return controllers.first(where: { $0.window?.isMainWindow == true })
     }
 
     @objc func saveDocument(_ sender: Any?) { keyController()?.save() }
