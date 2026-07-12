@@ -4,8 +4,9 @@
 
 # MarkdownViewer
 
-**A fast, native Markdown viewer & editor — Preview, Edit, and Split with live
-rendering, synced scrolling, and find & replace. 100% offline.**
+**A fast, native Markdown viewer & editor for macOS and Windows.**
+Preview, Edit, and Split with live rendering, synced scrolling, and
+find & replace — 100% offline.
 
 ![platform](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-blue)
 ![license](https://img.shields.io/badge/license-GPLv3-green)
@@ -16,30 +17,56 @@ rendering, synced scrolling, and find & replace. 100% offline.**
 
 ---
 
-## Screenshots
+<div align="center">
 
-| Split editing (light) | About |
-|:---:|:---:|
-| ![Split mode](docs/screenshots/split.png) | ![About](docs/screenshots/about.png) |
+*Split mode — raw markdown on the left, live preview on the right, scrolling in sync.*
 
-*Shots are from the Windows build; the macOS app shares the same in-page UI.*
+<img src="docs/screenshots/split.png" width="850" alt="Split mode, light theme">
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/preview-dark.png" alt="Dark preview with syntax-highlighted code"><br><sub><b>Dark theme</b> · highlighted code with copy buttons</sub></td>
+    <td align="center"><img src="docs/screenshots/find-replace.png" alt="Find and replace bar"><br><sub><b>Find & Replace</b> · match count, case toggle</sub></td>
+    <td align="center"><img src="docs/screenshots/about.png" alt="About window"><br><sub><b>About</b> · changelog & design docs built in</sub></td>
+  </tr>
+</table>
+
+</div>
+
+## Why
+
+macOS only quick-looks `.md` files; Windows opens them in Notepad. MarkdownViewer
+gives them a real home: double-click → a rendered document in a native window,
+with just enough editor to fix a typo, tick a checkbox, and save — and nothing else.
+No Electron, no accounts, no network. One native source file per platform driving
+a system web view, ~700 lines each.
 
 ## Features
 
-- 📝 **Preview · Edit · Split** modes (`⌘1/2/3` · `Ctrl+1/2/3`) with a GitHub-style toolbar toggle
-- ↔️ **Draggable splitter** + **synced scrolling** between editor and preview (drag the divider; double-click to reset)
-- 💾 **Edit and save to disk** (`⌘S` · `Ctrl+S`) with an unsaved-changes dot and a Save / Don't Save / Cancel guard on close
-- 🔍 **Find & Replace** (`⌘F` · `Ctrl+F`): match count, next/prev, replace one/all, case toggle
-- ↩️ **Wrap Lines** toggle (`View ▸ Wrap Lines`) — soft-wrap or horizontal scroll
-- 🆕 **New documents** (`⌘N` · `Ctrl+N`) opening in Split mode; the first save asks where to put the file (defaults to `.md`, any typed extension accepted)
-- 🕘 **Open Recent** — the last 10 files, one menu away
-- 🌗 **Light / Dark / System** theme (circular toggle), follows the OS
-- 🗂️ **Tabs** — multiple files as tabs (native window tabs on macOS; one tabbed window on Windows, where files opened from Explorer join the running instance)
+**Viewing**
+- 📝 **Preview · Edit · Split** (`⌘1/2/3` · `Ctrl+1/2/3`) with a draggable splitter and synced scrolling
+- 🌗 **Light / Dark / System** theme, GitHub-style rendering (marked + highlight.js, bundled)
+- 🔎 **Zoom** (`⌘+/−/0`) that widens the column with the text — no re-wrapping
+- 📋 **Copy buttons** on fenced code blocks; in-document anchor links that work
 - 🔄 **Live reload** when the file changes on disk (paused while you have unsaved edits)
-- 📋 **Copy buttons** on fenced code blocks; working in-document anchor links
-- 🔒 **100% offline** (marked + highlight.js + GitHub CSS bundled) — the app makes no network requests, and rendered documents are sandboxed by a CSP + HTML sanitizer
 
-## Install (one line)
+**Editing**
+- 💾 **Save** (`⌘S` · `Ctrl+S`) with a dirty-dot and Save / Don't Save / Cancel guards on close *and* quit
+- 🆕 **New documents** (`⌘N` · `Ctrl+N`) opening in Split mode; first save defaults to `.md`, any typed extension accepted
+- 🔍 **Find & Replace** (`⌘F`/`⌥⌘F` · `Ctrl+F`/`Ctrl+H`) with match count and case toggle — undo-safe
+- ↩️ **Wrap Lines** toggle; Tab inserts spaces without killing undo
+
+**Files**
+- 🗂️ **Tabs** — native window tabs on macOS; one tabbed window on Windows where Explorer-opened files join the running instance
+- 🕘 **Open Recent** (last 10 files) and **Open Path…** (`⇧⌘G`) for pasted paths
+- 🖱️ Drag & drop onto the window
+
+**Trust**
+- 🔒 **Zero network requests** — everything renders from bundled assets
+- 🛡️ Documents are treated as untrusted: a Content-Security-Policy plus an HTML
+  sanitizer keep raw-HTML markdown from running scripts or phoning home
+
+## Install
 
 **macOS** — paste in Terminal:
 
@@ -53,68 +80,79 @@ curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/inst
 irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.ps1 | iex
 ```
 
-Each installer detects everything else automatically: on macOS it grabs the latest DMG
-from [Releases](../../releases) (or builds from source if the release has no DMG yet) and
-installs to `/Applications`; on Windows it downloads the self-contained build, installs
-the WebView2 Runtime if missing, and adds a Start Menu shortcut — no admin rights needed.
-The `curl` line even works in **Git Bash on Windows** (it hands off to the PowerShell
-installer), so one command covers both platforms if Git Bash is your shell.
+The installers handle the rest: macOS gets the latest DMG from
+[Releases](../../releases) (or builds from source) into `/Applications`;
+Windows gets the self-contained build, the WebView2 Runtime if missing, and a
+Start Menu shortcut — no admin rights needed.
 
-## Windows version
+<details>
+<summary><b>Manual install & building from source</b></summary>
 
-A full Windows port lives in [`windows/`](windows) — same features and the same bundled
-rendering assets, built with C# + WebView2 instead of Swift + WebKit (tabs, live reload,
-find & replace, new/recent files, light/dark/system theme). See
-[`windows/README.md`](windows/README.md) for build and usage.
+### macOS — download
 
-## Manual install (macOS)
-
-### Download
-
-1. Download the latest **`MarkdownViewer.dmg`** from the [Releases](../../releases) page.
-2. Open it and drag **MarkdownViewer** onto **Applications**.
-3. First launch: the app is ad-hoc signed (no paid Developer ID), so macOS Gatekeeper may
-   warn. **Right-click the app → Open**, or run:
+1. Grab **`MarkdownViewer.dmg`** from [Releases](../../releases) and drag the app to **Applications**.
+2. First launch: the app is ad-hoc signed, so Gatekeeper may warn. **Right-click → Open**, or:
    ```bash
    xattr -dr com.apple.quarantine /Applications/MarkdownViewer.app
    ```
+3. Default app for `.md`: right-click a file → **Get Info** → **Open with** → **Change All…**
 
-To make it the default for `.md` files: right-click a Markdown file → **Get Info** → **Open
-with** → **MarkdownViewer** → **Change All…**
+### macOS — build (universal binary, no Xcode project)
 
-### Build from source
-
-Requires the Xcode command line tools (`xcode-select --install`) and internet on the first
-build (to fetch the bundled JS/CSS, cached afterward).
+Requires the Xcode command line tools (`xcode-select --install`); internet on the first build only.
 
 ```bash
 git clone https://github.com/dgodibadze/MarkdownViewer.git
 cd MarkdownViewer
-./build.sh            # produces MarkdownViewer.app
-./make-dmg.sh         # optional: produces MarkdownViewer.dmg
+./build.sh            # arm64 + x86_64 → MarkdownViewer.app
+./make-dmg.sh         # optional: MarkdownViewer.dmg
 ```
 
-## Usage
+### Windows — build
+
+Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
+
+```powershell
+cd windows
+.\build.ps1            # → bin\Release\net8.0-windows\MarkdownViewer.exe
+.\build.ps1 -Publish   # self-contained single file → dist\MarkdownViewer.exe
+```
+
+See [`windows/README.md`](windows/README.md) for details.
+
+</details>
+
+## Shortcuts
 
 | Action | macOS | Windows |
 |---|---|---|
 | Preview / Edit / Split | `⌘1` / `⌘2` / `⌘3` | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
 | New / Save | `⌘N` / `⌘S` | `Ctrl+N` / `Ctrl+S` |
 | Find / Find & Replace | `⌘F` / `⌥⌘F` | `Ctrl+F` / `Ctrl+H` |
-| Open / Close / Reload | `⌘O` / `⌘W` / `⌘R` | `Ctrl+O` / `Ctrl+W` / `Ctrl+R` |
-| Zoom in / out / reset | `⌘+` / `⌘−` / `⌘0` | `Ctrl+` / `Ctrl−` / `Ctrl 0` |
+| Open / Open Path / Close | `⌘O` / `⇧⌘G` / `⌘W` | `Ctrl+O` / `Ctrl+Shift+G` / `Ctrl+W` |
+| Reload from disk | `⌘R` | `Ctrl+R` or `F5` |
+| Zoom in / out / reset | `⌘+` / `⌘−` / `⌘0` | `Ctrl +` / `Ctrl −` / `Ctrl 0` |
 
-- **Resize the split** by dragging the divider; **double-click** it for 50/50.
+Try it on the staged demo docs in [`docs/examples/`](docs/examples) —
+[`showcase.md`](docs/examples/showcase.md) exercises everything the renderer does.
 
 ## How it works
 
-One native source file per platform drives a web view that renders a bundled HTML template,
-talking to it over a small message bridge: `Sources/main.swift` + `WKWebView` on macOS,
-`windows/Program.cs` + WebView2 on Windows. See
-[`Resources/ARCHITECTURE.md`](Resources/ARCHITECTURE.md) and
-[`Resources/DESIGN.md`](Resources/DESIGN.md) for the full design and
-[`CHANGELOG.md`](CHANGELOG.md) for history. Contributions welcome — see
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+One native source file per platform drives a system web view that renders a
+shared, bundled HTML template, talking to it over a small message bridge:
+
+| | macOS | Windows |
+|---|---|---|
+| Shell | `Sources/main.swift` (AppKit) | `windows/Program.cs` (WinForms) |
+| Web view | WKWebView | WebView2 |
+| Binary | Universal (arm64 + x86_64) | win-x64, single file |
+
+The full design — rendering pipeline, save/dirty invariants, security model,
+scroll-sync approach — is documented in
+[`Resources/DESIGN.md`](Resources/DESIGN.md) and
+[`Resources/ARCHITECTURE.md`](Resources/ARCHITECTURE.md) (both readable from
+the app's About window), with history in [`CHANGELOG.md`](CHANGELOG.md).
+Contributions welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License & credits
 
