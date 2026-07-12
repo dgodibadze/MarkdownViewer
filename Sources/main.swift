@@ -459,10 +459,11 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     /// Falls back to the cached `lastText` when the page can't answer (e.g. the
     /// error page is showing). Captures self strongly so a save triggered while
     /// the window is closing still completes.
-    func save() {
+    func save(completion: (() -> Void)? = nil) {
         webView.evaluateJavaScript("window.__getText ? window.__getText() : null") { result, _ in
             if let text = result as? String { self.lastText = text }
             self.writeToDisk()
+            completion?()
         }
     }
 
@@ -571,11 +572,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// Warn before closing a window/tab that has unsaved edits.
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let controller = controllers.values.first(where: { $0.window === sender }),
-              controller.isDirty else { return true }
+    private enum UnsavedChoice { case save, discard, cancel }
 
+    /// The standard Save / Don't Save / Cancel dialog for a dirty document.
+    private func unsavedChangesChoice(for controller: ViewerWindowController) -> UnsavedChoice {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Do you want to save the changes you made to “\(controller.fileURL.lastPathComponent)”?"
@@ -584,14 +584,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alert.addButton(withTitle: "Don't Save")
         alert.addButton(withTitle: "Cancel")
         switch alert.runModal() {
-        case .alertFirstButtonReturn:  // Save
-            controller.save()
-            return true
-        case .alertSecondButtonReturn: // Don't Save
-            return true
-        default:                       // Cancel
-            return false
+        case .alertFirstButtonReturn:  return .save
+        case .alertSecondButtonReturn: return .discard
+        default:                       return .cancel
         }
+    }
+
+    /// Warn before closing a window/tab that has unsaved edits.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard let controller = controllers.values.first(where: { $0.window === sender }),
+              controller.isDirty else { return true }
+        switch unsavedChangesChoice(for: controller) {
+        case .save:    controller.save(); return true
+        case .discard: return true
+        case .cancel:  return false
+        }
+    }
+
+    /// Quit must honor unsaved edits too — closing windows during termination
+    /// does NOT go through windowShouldClose. Saves are async (they pull the
+    /// live text from the page), so termination is deferred until all chosen
+    /// saves have hit the disk.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        var toSave: [ViewerWindowController] = []
+        for controller in controllers.values where controller.isDirty {
+            controller.window?.makeKeyAndOrderFront(nil)
+            switch unsavedChangesChoice(for: controller) {
+            case .save:    toSave.append(controller)
+            case .discard: break
+            case .cancel:  return .terminateCancel
+            }
+        }
+        guard !toSave.isEmpty else { return .terminateNow }
+        var remaining = toSave.count
+        for controller in toSave {
+            controller.save {
+                remaining -= 1
+                if remaining == 0 { NSApp.reply(toApplicationShouldTerminate: true) }
+            }
+        }
+        return .terminateLater
     }
 
     func windowWillClose(_ notification: Notification) {

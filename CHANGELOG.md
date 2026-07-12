@@ -5,6 +5,16 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.2] — 2026-07-12
+
+### Fixed
+
+- **Quitting (⌘Q) discarded unsaved edits without asking.** The Save / Don't
+  Save / Cancel prompt only guarded window close (⌘W); quitting closed all
+  windows without consulting it. `applicationShouldTerminate` now walks every
+  dirty document, fronts its window, shows the same prompt, and defers
+  termination (`.terminateLater`) until all chosen saves have finished writing.
+
 ## [1.1] — 2026-07-12
 
 ### Fixed
