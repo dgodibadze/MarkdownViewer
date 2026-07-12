@@ -5,6 +5,24 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.7] — 2026-07-12
+
+### Fixed
+
+- **View ▸ Reload now actually re-renders from disk.** It previously triggered
+  `WKWebView.reload`, which just reloaded the stale temp HTML — external file
+  changes were never picked up and in-page edits were silently dropped. The menu
+  item (retitled "Reload From Disk", still ⌘R) re-renders the document and asks
+  for confirmation before discarding unsaved edits.
+- **Render-failure no longer causes a once-per-second reload loop.** The error
+  path never recorded the file's modification date, so the live-reload watcher
+  re-rendered the error page every tick, flickering forever.
+
+### Removed
+
+- Dead code: the unwired `reloadDocument(_:)` action and the empty
+  `navigationDidFinish()` stub.
+
 ## [1.6] — 2026-07-12
 
 ### Fixed

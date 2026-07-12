@@ -334,6 +334,9 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
                 + "<h3>MarkdownViewer could not render</h3>"
                 + "<b>File:</b> \(fileURL.path)<br><br>\(safe)</body></html>"
             webView.loadHTMLString(html, baseURL: nil)
+            // Mark the current mtime as seen even on failure — otherwise the
+            // 1 Hz watcher re-renders the error page every second, forever.
+            lastModified = modificationDate()
             return
         }
         // Allow read access to "/" so the bundled assets (in Resources) and any
@@ -511,6 +514,13 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     func findInPage() { webView.evaluateJavaScript("window.__find && window.__find()") }
     func findReplaceInPage() { webView.evaluateJavaScript("window.__findReplace && window.__findReplace()") }
 
+    /// Re-renders the document from disk, deliberately discarding in-page edits
+    /// (the caller confirms with the user first when dirty).
+    func reloadFromDisk() {
+        isDirty = false
+        renderAndLoad()
+    }
+
     func stop() {
         watchTimer?.invalidate()
         watchTimer = nil
@@ -518,8 +528,6 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "bridge")
         try? FileManager.default.removeItem(at: tempFile)
     }
-
-    func navigationDidFinish() {}
 
     // Open http/https links in the default browser; allow local navigation.
     func webView(_ webView: WKWebView,
@@ -747,10 +755,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    @objc func reloadDocument(_ sender: Any?) {
-        if let key = controllers.first(where: { $0.value.window?.isKeyWindow == true })?.key {
-            controllers[key]?.window?.makeKeyAndOrderFront(nil)
+    /// View ▸ Reload: re-render the key document from disk. Unlike the old
+    /// WKWebView.reload (which reloaded the stale temp HTML), this picks up
+    /// external file changes — and asks before discarding unsaved edits.
+    @objc func reloadFromDisk(_ sender: Any?) {
+        guard let controller = keyController() else { return }
+        if controller.isDirty {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Reload “\(controller.fileURL.lastPathComponent)” from disk?"
+            alert.informativeText = "Your unsaved changes will be lost."
+            alert.addButton(withTitle: "Reload")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
+        controller.reloadFromDisk()
     }
 
     // MARK: About + bundled docs
@@ -896,8 +915,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         wrapItem.state = wrapOn ? .on : .off
         wrapMenuItem = wrapItem
         viewMenu.addItem(NSMenuItem.separator())
-        let reloadItem = viewMenu.addItem(withTitle: "Reload", action: #selector(WKWebView.reload(_:)), keyEquivalent: "r")
-        reloadItem.target = nil
+        viewMenu.addItem(withTitle: "Reload From Disk", action: #selector(reloadFromDisk(_:)), keyEquivalent: "r")
         viewMenuItem.submenu = viewMenu
 
         // AI menu
