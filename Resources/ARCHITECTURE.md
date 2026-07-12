@@ -47,34 +47,27 @@ A single `WKScriptMessageHandler` named `bridge` carries messages **page → Swi
 | `change`   | latest editor text (fallback cache for saves)                 |
 | `save`     | write the editor text to disk                                 |
 | `setWrap`  | wrap on/off (keeps the View ▸ Wrap Lines checkmark in sync)   |
-| `ai`       | run an AI request (mode: improve / chat / generate)           |
 
 Swift calls back into the page with `evaluateJavaScript` hooks: `window.__onSaved`,
 `window.__getText` (live text pulled before every save), `window.__setMode`,
-`window.__toggleWrap`, `window.__find`, `window.__findReplace`, `window.__aiImprove`,
-`window.__aiGenerate`, `window.__toggleChat`, `window.__aiResult`, `window.__aiError`.
+`window.__toggleWrap`, `window.__find`, `window.__findReplace`.
 
 **New menu items that act on the document follow this pattern**: logic lives in JS,
 exposed as a `window.__something`, called from the native menu.
 
-## Windows, tabs, live reload
+## Windows, tabs, documents, live reload
 
-`AppDelegate` keeps one `ViewerWindowController` per open file (native window
-tabbing; first window remembers its frame, later ones cascade). Each controller
-polls the file's modification date once a second to live-reload external changes —
-suspended while the buffer is dirty so edits are never clobbered. Saving pulls the
-live editor text from the page, writes it, and refreshes the stored modification
-date so the app's own write doesn't trigger a reload. Both window close and app
-quit prompt for unsaved changes; quit defers termination until saves complete.
-
-## AI assistant
-
-`main.swift` holds a small provider model (`AIProvider` + `ProviderKind`:
-`openai` / `anthropic` / `gemini`) with user-editable base URL and model per provider.
-API keys live in the macOS **Keychain** (one item per provider), entered through a
-secure Settings dialog — keys never touch the WebView, are sent in headers (never
-URLs), and failed Keychain writes are reported instead of swallowed. Requests run
-on `URLSession`; the active provider and model persist in `UserDefaults`.
+`AppDelegate` keeps one `ViewerWindowController` per open document — file-backed
+or a new **Untitled** one (`fileURL == nil`, created via File ▸ New; the first
+save runs a save panel defaulting to `.md`). Native window tabbing; the first
+window remembers its frame, later ones cascade. Each file-backed controller
+polls the file's modification date once a second to live-reload external
+changes — suspended while the buffer is dirty so edits are never clobbered.
+Saving pulls the live editor text from the page, writes it, and refreshes the
+stored modification date so the app's own write doesn't trigger a reload. Both
+window close and app quit prompt for unsaved changes; quit defers termination
+until saves complete. Recently opened files persist in `UserDefaults` and show
+under File ▸ Open Recent.
 
 ## Design choices / trade-offs
 
@@ -82,8 +75,10 @@ on `URLSession`; the active provider and model persist in `UserDefaults`.
   GitHub-flavored and rendered entirely in the WebView.
 - **Everything in one template + one Swift file**: easy to read, build, and audit; no
   package manager, no Xcode project.
-- **In-page UI** (toolbar, find bar, AI chat) lives in HTML/CSS/JS so it themes for free
+- **In-page UI** (toolbar, find bar) lives in HTML/CSS/JS so it themes for free
   via the shared CSS variables and needs no extra native views.
+- **Fully offline**: the app makes no network requests (the AI assistant was
+  removed in v1.2; see DESIGN.md).
 - **macOS-only by construction** (AppKit + WKWebView). A Windows port would mean
   rewriting the native shell (Tauri would be the closest fit); the in-page UI
   would port nearly as-is.

@@ -12,13 +12,14 @@ explicitly "not a standalone viewer"), but the viewer is original code. QLMarkdo
 is no longer a dependency — do not expect its sources in this repo.
 
 It has since grown into a light editor: preview / edit / split modes, save,
-find & replace, an AI chat panel, zoom, and copy buttons on code blocks.
+New/Untitled documents, Open Recent, find & replace, zoom, and copy buttons on
+code blocks. It is fully offline — the AI assistant was removed in v1.2.
 
 ## Architecture (two files carry almost everything)
 
-- **`Sources/main.swift`** (~1000 lines, AppKit, no Xcode project) — app lifecycle,
+- **`Sources/main.swift`** (~700 lines, AppKit, no Xcode project) — app lifecycle,
   document types, window/tab management, the native menu bar, live-reload file
-  watching, AI provider calls + Keychain, and one `WKWebView` per open file.
+  watching, recent files, save/save-as, and one `WKWebView` per open document.
 - **`Resources/template.html`** — the entire UI *inside* the web view: toolbar,
   editor textarea, rendered preview, find bar, chat panel, theme system, zoom,
   code-block copy buttons. All CSS/JS is inline in this one file.
@@ -46,12 +47,12 @@ the `<base href>` (pointing at the doc's folder) doesn't break them.
 
 JS → Swift: `window.webkit.messageHandlers.bridge.postMessage({action: ...})`.
 Handled in `ViewerWindowController.userContentController` — actions: `dirty`,
-`change`, `save`, `setWrap`, `ai`.
+`change`, `save`, `setWrap`.
 
 Swift → JS: `webView.evaluateJavaScript("window.__xxx && window.__xxx()")`.
 Globals the native side calls: `__setMode`, `__toggleWrap`, `__find`,
-`__findReplace`, `__aiImprove`, `__aiGenerate`, `__toggleChat`, `__onSaved`,
-`__getText` (live editor text, pulled before every save), `__aiResult`, `__aiError`.
+`__findReplace`, `__onSaved`, `__getText` (live editor text, pulled before
+every save).
 
 **If you add a menu item that acts on the document, follow this pattern** — put the
 logic in JS, expose a `window.__something`, and have the menu item call it.
@@ -121,8 +122,8 @@ Both have caught real errors. They do not replace an actual build.
    literal `</script>` in a document can't terminate the embedding script.
 
 7. **Never assign `editor.value` directly for edits** — it wipes the textarea's
-   native undo stack (⌘Z goes dead). All programmatic edits (Tab, Replace,
-   AI insert) go through `spliceEditor()`, which uses
+   native undo stack (⌘Z goes dead). All programmatic edits (Tab, Replace)
+   go through `spliceEditor()`, which uses
    `document.execCommand('insertText')` so WebKit records a normal undoable edit.
 
 8. **Saves must never trust a possibly-empty cache.** `lastText` is seeded from
@@ -144,11 +145,12 @@ Both have caught real errors. They do not replace an actual build.
 - All CSS colors go through the theme variables (`--bg`, `--surface`, `--text`,
   `--muted`, `--border`, `--accent`, `--success`) defined under
   `:root[data-theme="light|dark"]`. Never hardcode a color.
-- **Versioning policy**: every fix or new piece of functionality bumps the app
-  version by 0.1 (`CFBundleShortVersionString` **and** `CFBundleVersion` in
-  `Info.plist`), gets a dated section in the root `CHANGELOG.md` (the canonical
-  changelog — build.sh copies it into the bundle for the About window), and is
-  its own git commit titled `v<X.Y>: <summary>`.
+- **Versioning policy**: bump the app version by 0.1 **per release batch** — a
+  coherent set of fixes/features shipped together gets ONE version and ONE
+  combined, dated section in the root `CHANGELOG.md` (the canonical changelog —
+  build.sh copies it into the bundle for the About window). Update
+  `CFBundleShortVersionString` **and** `CFBundleVersion` in `Info.plist`.
+  Do NOT bump per individual fix (that was tried and rolled back).
 - Docs shown by the About window: `CHANGELOG.md` (root), `Resources/ARCHITECTURE.md`
   (structure), `Resources/DESIGN.md` (behavior/how-it-works). Update DESIGN.md when
   changing feature behavior.
@@ -158,19 +160,22 @@ Both have caught real errors. They do not replace an actual build.
 
 ## State as of this handoff
 
-Clean tree, one commit per version (see `git log` / `CHANGELOG.md`). App is at
-**v2.4**: a bug-fix sweep (v1.1–v2.2) covering the save data-loss paths, quit
-prompt, AI URL crash, token substitution order, anchor links, undo preservation,
-reload semantics, window cascading, Gemini key header, CSP + sanitizer, Keychain
-error surfacing, and modernized defaults; v2.3 made the binary universal
-(arm64 + x86_64); v2.4 added `Resources/DESIGN.md` and refreshed the docs.
+Clean tree; app is at **v1.2** (2026-07-12) — see `CHANGELOG.md` for the full
+combined release notes. Highlights: save/quit data-loss fixes, CSP + sanitizer,
+undo-preserving edits, working anchor links, File ▸ New (Untitled → save panel,
+default .md, any typed extension accepted), File ▸ Open Recent, universal
+binary (arm64 + x86_64), always-visible code-block copy buttons — and the
+**entire AI assistant was removed** (no networking code remains; don't
+reintroduce it without being asked; the old implementation is in git history
+in the earlier v2.x-numbered commits).
 
-The build is a **universal binary** — `build.sh` compiles each arch with
-`-target <arch>-apple-macos11.0` and merges with `lipo`. Windows support is
-deliberately out of scope (AppKit/WKWebView shell); see DESIGN.md → Platform
-support for the porting story if it ever comes up.
+Note on git history: commits between the "v1.0 baseline" and "v1.2" carry
+interim v1.1–v2.4 numbering from a per-fix versioning experiment that was
+rolled back into the single 1.2 release — trust CHANGELOG.md, not those commit
+titles, for version mapping.
 
-Known future-feature backlog (from the July 2026 review, unimplemented):
+Windows support is deliberately out of scope (AppKit/WKWebView shell); see
+DESIGN.md → Platform support. Known future-feature backlog (unimplemented):
 PDF export/print, TOC sidebar, Mermaid/KaTeX, clickable task checkboxes,
-streaming AI, Open Recent / Dock-reopen / proxy-icon polish, file-descriptor
-watching instead of 1 Hz polling.
+Dock-reopen / proxy-icon polish, file-descriptor watching instead of 1 Hz
+polling.

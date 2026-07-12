@@ -37,9 +37,21 @@ Markdown may contain raw HTML, so rendered documents are treated as untrusted:
 - **`</script>` escaping**: the markdown is embedded inside an inline script,
   so `jsStringLiteral()` explicitly escapes `</` — a document containing a
   literal `</script>` must not terminate the embedding script.
-- **API keys** live in the macOS Keychain (one item per provider), entered via
-  a native secure field; they never touch the web view, and the Gemini key is
-  sent as a header, never in the URL.
+- **No networking**: the app itself makes no network requests of any kind.
+
+## File management
+
+- **File ▸ New (⌘N)** opens a blank **Untitled** document (`fileURL == nil`,
+  starts in Edit mode). The first save runs an `NSSavePanel` sheet with
+  `Untitled.md` pre-filled; `allowsOtherFileTypes` lets the user type any other
+  extension. After a successful first save the window retitles, live-reload
+  watching starts, and the page re-renders so `<base href>` points at the real
+  folder. Cancelling the panel reports the save as *not done* — a close or quit
+  waiting on it is aborted rather than discarding the document.
+- **File ▸ Open Recent** lists the last 10 opened files, persisted in
+  `UserDefaults` (`recentFiles`) and rebuilt from disk every time the menu
+  opens (missing files are hidden; Clear Menu empties it). Opens also feed
+  `NSDocumentController` so the Dock icon's right-click menu matches.
 
 ## Save / dirty pipeline (data-loss invariants)
 
@@ -71,8 +83,8 @@ triggers the same re-render manually, confirming first if edits would be lost.
 
 ## Editor behaviors
 
-- **Undo**: all programmatic edits (Tab-inserts-spaces, Replace / Replace All,
-  AI insert/improve) go through `spliceEditor()`, which uses
+- **Undo**: all programmatic edits (Tab-inserts-spaces, Replace / Replace All)
+  go through `spliceEditor()`, which uses
   `document.execCommand('insertText')` so WebKit records them as normal
   undoable edits. **Never assign `editor.value` directly** — that wipes the
   native undo stack. Replace All is one whole-document splice = one undo step.
@@ -106,23 +118,23 @@ One window per file, native tabbing preferred. Only the **first** window uses
 the frame-autosave name (multiple windows sharing one name fight over it and
 stack exactly); later windows cascade down-right.
 
-## AI assistant
+## AI assistant (removed in 1.2)
 
-Three modes flow through one `ai` bridge action: **improve** (revise the
-selection per an instruction), **generate** (insert markdown at the cursor),
-and **chat** (docked panel; each request carries the full document as context
-plus the visible history). Providers: OpenAI-compatible (Groq, Nous, OpenAI),
-Anthropic, and Gemini — base URL and model are user-editable per provider in
-AI ▸ Settings…. Requests run on `URLSession` with a 60s timeout; responses
-resolve JS promises via `window.__aiResult` / `window.__aiError` matched by id.
+The app previously shipped a multi-provider AI assistant (chat panel, improve
+selection, generate & insert, Keychain-stored keys). It was removed in v1.2 at
+the owner's request — the app is now fully offline. Keys previously stored
+remain in the macOS Keychain under `com.dave.markdownviewer.ai` until deleted
+via Keychain Access. If it ever comes back, the old implementation lives in
+git history before the v1.2 commit.
 
 ## Versioning policy
 
-- **Every fix or new piece of functionality bumps the version by 0.1**
-  (`CFBundleShortVersionString` + `CFBundleVersion` in `Info.plist`).
-- Every bump gets a dated section in `CHANGELOG.md` (repo root — it is copied
-  into the bundle at build time and shown by the About window).
-- One git commit per version, message `v<X.Y>: <summary>`.
+- **Versions bump by 0.1 per release batch** — a coherent set of fixes/features
+  shipped together gets ONE version and ONE combined changelog section (not one
+  bump per individual fix). Update `CFBundleShortVersionString` +
+  `CFBundleVersion` in `Info.plist`.
+- Every release gets a dated section in `CHANGELOG.md` (repo root — it is
+  copied into the bundle at build time and shown by the About window).
 
 ## Platform support
 

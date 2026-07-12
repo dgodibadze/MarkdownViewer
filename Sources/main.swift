@@ -1,184 +1,6 @@
 import Cocoa
 import WebKit
-import Security
 import UniformTypeIdentifiers
-
-// MARK: - AI providers, Keychain, networking
-
-enum ProviderKind: String { case openai, anthropic, gemini }
-
-struct AIProvider {
-    let id: String
-    let name: String
-    let kind: ProviderKind
-    let defaultBaseURL: String
-    let defaultModel: String
-}
-
-/// Built-in providers. Base URL + model are user-editable in Settings, so unusual or new
-/// endpoints (and the exact model ids each account has access to) can be corrected by the user.
-let AI_PROVIDERS: [AIProvider] = [
-    AIProvider(id: "groq",      name: "Groq",        kind: .openai,
-               defaultBaseURL: "https://api.groq.com/openai/v1",          defaultModel: "llama-3.3-70b-versatile"),
-    AIProvider(id: "nous",      name: "Nous Portal", kind: .openai,
-               defaultBaseURL: "https://inference-api.nousresearch.com/v1", defaultModel: "Hermes-3-Llama-3.1-70B"),
-    AIProvider(id: "openai",    name: "OpenAI",      kind: .openai,
-               defaultBaseURL: "https://api.openai.com/v1",               defaultModel: "gpt-5.1"),
-    AIProvider(id: "anthropic", name: "Anthropic",   kind: .anthropic,
-               defaultBaseURL: "https://api.anthropic.com",               defaultModel: "claude-sonnet-5"),
-    AIProvider(id: "gemini",    name: "Gemini",      kind: .gemini,
-               defaultBaseURL: "https://generativelanguage.googleapis.com/v1beta", defaultModel: "gemini-2.5-flash"),
-]
-
-struct ChatMessage { let role: String; let content: String }   // role: "user" | "assistant"
-struct AIPrompt { let system: String; let messages: [ChatMessage] }
-
-enum AIError: LocalizedError {
-    case noKey(String), badResponse, http(Int, String), badURL(String)
-    var errorDescription: String? {
-        switch self {
-        case .noKey(let name): return "No API key set for \(name). Open AI ▸ Settings… to add one."
-        case .badResponse:     return "The AI service returned an unexpected response."
-        case .http(let code, let msg): return "AI request failed (HTTP \(code)). \(msg)"
-        case .badURL(let url): return "The AI endpoint URL is invalid: \(url)\nCheck the Base URL in AI ▸ Settings…."
-        }
-    }
-}
-
-/// Minimal Keychain wrapper: one generic-password item per provider id.
-enum Keychain {
-    static let service = "com.dave.markdownviewer.ai"
-    /// Stores the key; returns false (with a reason) when the write fails so the
-    /// UI never claims a key is saved when it isn't.
-    @discardableResult
-    static func set(_ value: String, account: String) -> Bool {
-        let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service,
-                                    kSecAttrAccount as String: account]
-        SecItemDelete(base as CFDictionary)
-        guard let data = value.data(using: .utf8) else { return false }
-        var add = base; add[kSecValueData as String] = data
-        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
-    }
-    static func get(_ account: String) -> String? {
-        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                kSecAttrService as String: service,
-                                kSecAttrAccount as String: account,
-                                kSecReturnData as String: true,
-                                kSecMatchLimit as String: kSecMatchLimitOne]
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-}
-
-/// Builds and sends provider requests. Reads the active provider + overrides from UserDefaults.
-final class AIService {
-    static let shared = AIService()
-    private let d = UserDefaults.standard
-
-    func activeProvider() -> AIProvider {
-        let id = d.string(forKey: "ai.activeProvider") ?? "groq"
-        return AI_PROVIDERS.first(where: { $0.id == id }) ?? AI_PROVIDERS[0]
-    }
-    func baseURL(for p: AIProvider) -> String {
-        let v = d.string(forKey: "ai.baseURL.\(p.id)") ?? ""
-        return v.isEmpty ? p.defaultBaseURL : v
-    }
-    func model(for p: AIProvider) -> String {
-        let v = d.string(forKey: "ai.model.\(p.id)") ?? ""
-        return v.isEmpty ? p.defaultModel : v
-    }
-    func setActive(_ id: String) { d.set(id, forKey: "ai.activeProvider") }
-    func setBaseURL(_ v: String, for id: String) { d.set(v, forKey: "ai.baseURL.\(id)") }
-    func setModel(_ v: String, for id: String) { d.set(v, forKey: "ai.model.\(id)") }
-
-    func complete(_ prompt: AIPrompt, completion: @escaping (Result<String, Error>) -> Void) {
-        let p = activeProvider()
-        guard let key = Keychain.get(p.id), !key.isEmpty else {
-            return completion(.failure(AIError.noKey(p.name)))
-        }
-        let req: URLRequest
-        do { req = try buildRequest(p, key: key, prompt: prompt) }
-        catch { return completion(.failure(error)) }
-
-        URLSession.shared.dataTask(with: req) { data, resp, err in
-            let finish: (Result<String, Error>) -> Void = { r in DispatchQueue.main.async { completion(r) } }
-            if let err = err { return finish(.failure(err)) }
-            guard let http = resp as? HTTPURLResponse, let data = data else { return finish(.failure(AIError.badResponse)) }
-            if http.statusCode >= 400 {
-                let msg = String(data: data, encoding: .utf8).map { String($0.prefix(300)) } ?? ""
-                return finish(.failure(AIError.http(http.statusCode, msg)))
-            }
-            do { finish(.success(try self.parse(p.kind, data))) }
-            catch { finish(.failure(error)) }
-        }.resume()
-    }
-
-    private func buildRequest(_ p: AIProvider, key: String, prompt: AIPrompt) throws -> URLRequest {
-        let base = baseURL(for: p).hasSuffix("/") ? String(baseURL(for: p).dropLast()) : baseURL(for: p)
-        let mdl = model(for: p)
-        var req: URLRequest
-        var json: [String: Any]
-
-        // Base URL is user-editable in Settings — a malformed value must produce
-        // a descriptive error, never a force-unwrap crash.
-        func endpoint(_ path: String) throws -> URL {
-            guard let url = URL(string: base + path) else { throw AIError.badURL(base + path) }
-            return url
-        }
-
-        switch p.kind {
-        case .openai:
-            req = URLRequest(url: try endpoint("/chat/completions"))
-            req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-            var msgs: [[String: String]] = [["role": "system", "content": prompt.system]]
-            msgs += prompt.messages.map { ["role": $0.role, "content": $0.content] }
-            json = ["model": mdl, "messages": msgs]
-        case .anthropic:
-            req = URLRequest(url: try endpoint("/v1/messages"))
-            req.setValue(key, forHTTPHeaderField: "x-api-key")
-            req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-            let msgs = prompt.messages.map { ["role": $0.role, "content": $0.content] }
-            json = ["model": mdl, "max_tokens": 2048, "system": prompt.system, "messages": msgs]
-        case .gemini:
-            // Key goes in a header, never the URL — query strings end up in
-            // proxy/server logs.
-            req = URLRequest(url: try endpoint("/models/\(mdl):generateContent"))
-            req.setValue(key, forHTTPHeaderField: "x-goog-api-key")
-            let contents = prompt.messages.map { m -> [String: Any] in
-                ["role": m.role == "assistant" ? "model" : "user", "parts": [["text": m.content]]]
-            }
-            json = ["systemInstruction": ["parts": [["text": prompt.system]]], "contents": contents]
-        }
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: json)
-        req.timeoutInterval = 60
-        return req
-    }
-
-    private func parse(_ kind: ProviderKind, _ data: Data) throws -> String {
-        let obj = try JSONSerialization.jsonObject(with: data)
-        guard let root = obj as? [String: Any] else { throw AIError.badResponse }
-        switch kind {
-        case .openai:
-            if let choices = root["choices"] as? [[String: Any]],
-               let msg = choices.first?["message"] as? [String: Any],
-               let text = msg["content"] as? String { return text }
-        case .anthropic:
-            if let content = root["content"] as? [[String: Any]],
-               let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String { return text }
-        case .gemini:
-            if let cands = root["candidates"] as? [[String: Any]],
-               let content = cands.first?["content"] as? [String: Any],
-               let parts = content["parts"] as? [[String: Any]],
-               let text = parts.first?["text"] as? String { return text }
-        }
-        throw AIError.badResponse
-    }
-}
 
 // MARK: - Markdown rendering
 
@@ -195,10 +17,10 @@ enum Renderer {
         return Bundle.main.resourceURL ?? Bundle.main.bundleURL
     }
 
-    /// Returns the file URL of a freshly written temp HTML file, or nil on failure.
-    /// Renders the markdown file into `tempFile`.
+    /// Renders the markdown file (or an empty untitled document when `markdownFile`
+    /// is nil) into `tempFile`.
     /// Returns nil on success, or a human-readable error string on failure.
-    static func render(markdownFile: URL, into tempFile: URL) -> String? {
+    static func render(markdownFile: URL?, into tempFile: URL) -> String? {
         guard let tplURL = templateURL() else {
             return "Bundled template.html not found in app Resources."
         }
@@ -209,20 +31,27 @@ enum Renderer {
         // Read the markdown. Try UTF-8, then fall back to a lossy decode so odd
         // encodings still display instead of failing outright.
         let mdText: String
-        do {
-            mdText = try String(contentsOf: markdownFile, encoding: .utf8)
-        } catch {
-            if let data = try? Data(contentsOf: markdownFile) {
-                mdText = String(decoding: data, as: UTF8.self)
-            } else {
-                return "Could not read the markdown file.\n\(error.localizedDescription)"
+        if let markdownFile = markdownFile {
+            do {
+                mdText = try String(contentsOf: markdownFile, encoding: .utf8)
+            } catch {
+                if let data = try? Data(contentsOf: markdownFile) {
+                    mdText = String(decoding: data, as: UTF8.self)
+                } else {
+                    return "Could not read the markdown file.\n\(error.localizedDescription)"
+                }
             }
+        } else {
+            mdText = ""
         }
 
         // Resources directory as a file:// URL string (assets live here).
         let resDir = resourcesDirURL().absoluteString.trimmingTrailingSlash()
         // Markdown file's directory for resolving relative images/links.
-        let baseDir = markdownFile.deletingLastPathComponent().absoluteString
+        // Untitled documents have no directory yet — use home as a placeholder.
+        let baseDir = (markdownFile?.deletingLastPathComponent()
+            ?? FileManager.default.homeDirectoryForCurrentUser).absoluteString
+        let title = markdownFile?.lastPathComponent ?? "Untitled"
 
         // __MARKDOWN__ must be substituted LAST: it injects arbitrary document
         // text, and any token replaced after it would also match occurrences of
@@ -230,7 +59,7 @@ enum Renderer {
         // "__TITLE__" literally would get corrupted).
         template = template.replacingOccurrences(of: "__RES__", with: resDir)
         template = template.replacingOccurrences(of: "__BASE__", with: baseDir)
-        template = template.replacingOccurrences(of: "__TITLE__", with: htmlEscape(markdownFile.lastPathComponent))
+        template = template.replacingOccurrences(of: "__TITLE__", with: htmlEscape(title))
         template = template.replacingOccurrences(of: "__MARKDOWN__", with: jsStringLiteral(mdText))
 
         // Ensure the temp directory exists, then write. Report the real error.
@@ -285,11 +114,13 @@ private extension String {
 
 // MARK: - Viewer window
 
-final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate {
+final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WKScriptMessageHandler {
     private static var isFirstWindow = true
     private static var cascadePoint = NSPoint.zero
 
-    let fileURL: URL
+    /// nil = a new, never-saved "Untitled" document; the first save asks where
+    /// to put it (and with what name/extension).
+    private(set) var fileURL: URL?
     private var webView: WKWebView!
     private let tempFile: URL
     private var watchTimer: Timer?
@@ -301,8 +132,10 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     /// Latest editor text pushed from the page, used for menu/close-triggered saves.
     private var lastText: String = ""
 
-    init(fileURL: URL) {
-        self.fileURL = fileURL.resolvingSymlinksInPath()
+    var displayName: String { fileURL?.lastPathComponent ?? "Untitled" }
+
+    init(fileURL: URL?) {
+        self.fileURL = fileURL?.resolvingSymlinksInPath()
         let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("MarkdownViewer", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -316,7 +149,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         )
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "MarkdownViewer"
-        window.title = self.fileURL.lastPathComponent
+        window.title = self.fileURL?.lastPathComponent ?? "Untitled"
         // Only the first window restores/saves the shared frame — giving every
         // window the same autosave name made them fight over it and stack
         // exactly on top of each other. Later windows cascade instead.
@@ -337,11 +170,10 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         ucc.add(self, name: "bridge")
         webView.autoresizingMask = [.width, .height]
         webView.navigationDelegate = self
-        webView.uiDelegate = self
         window.contentView?.addSubview(webView)
 
         renderAndLoad()
-        startWatching()
+        if self.fileURL != nil { startWatching() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
@@ -353,7 +185,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
                 .replacingOccurrences(of: "<", with: "&lt;")
             let html = "<html><body style='font-family:-apple-system,sans-serif;padding:2rem;white-space:pre-wrap'>"
                 + "<h3>MarkdownViewer could not render</h3>"
-                + "<b>File:</b> \(fileURL.path)<br><br>\(safe)</body></html>"
+                + "<b>File:</b> \(fileURL?.path ?? "Untitled")<br><br>\(safe)</body></html>"
             webView.loadHTMLString(html, baseURL: nil)
             // Mark the current mtime as seen even on failure — otherwise the
             // 1 Hz watcher re-renders the error page every second, forever.
@@ -367,18 +199,21 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         // Seed the save cache with what's actually on disk. Without this, a
         // menu-triggered Save before any edit would write "" and wipe the file;
         // after an external-change reload it would silently revert the file.
-        if let data = try? Data(contentsOf: fileURL) {
+        if let fileURL = fileURL, let data = try? Data(contentsOf: fileURL) {
             lastText = String(decoding: data, as: UTF8.self)
         }
     }
 
     private func modificationDate() -> Date? {
+        guard let fileURL = fileURL else { return nil }
         let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         return attrs?[.modificationDate] as? Date
     }
 
     // Live reload: poll the file's modification date once per second.
     private func startWatching() {
+        guard fileURL != nil else { return }
+        watchTimer?.invalidate()
         watchTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             // Suspend reload while there are unsaved edits so we never clobber them.
@@ -409,107 +244,65 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         case "setWrap":
             let on = (body["wrap"] as? Bool) ?? true
             (NSApp.delegate as? AppDelegate)?.updateWrapState(on)
-        case "ai":
-            handleAI(body)
         default:
             break
         }
     }
 
-    /// Builds an AI prompt from a page request and streams the result back via `__aiResult`.
-    private func handleAI(_ body: [String: Any]) {
-        guard let id = body["id"] as? Int, let mode = body["mode"] as? String else { return }
-        let userPrompt = body["prompt"] as? String ?? ""
-        let selection = body["selection"] as? String ?? ""
-        let context = body["context"] as? String ?? ""
-
-        let prompt: AIPrompt
-        switch mode {
-        case "improve":
-            prompt = AIPrompt(
-                system: "You are a markdown editing assistant. Revise the user's selected text per their instruction. Return ONLY the revised markdown — no preamble, no code fences, no commentary.",
-                messages: [ChatMessage(role: "user", content: "Instruction: \(userPrompt)\n\nText to revise:\n\(selection)")])
-        case "generate":
-            prompt = AIPrompt(
-                system: "You write Markdown. Return ONLY the requested markdown content — no commentary, no surrounding code fences.",
-                messages: [ChatMessage(role: "user", content: userPrompt)])
-        case "chat":
-            var msgs: [ChatMessage] = []
-            if let history = body["history"] as? [[String: Any]] {
-                for h in history {
-                    if let r = h["role"] as? String, let c = h["content"] as? String {
-                        msgs.append(ChatMessage(role: r == "assistant" ? "assistant" : "user", content: c))
-                    }
-                }
-            }
-            msgs.append(ChatMessage(role: "user", content: userPrompt))
-            prompt = AIPrompt(
-                system: "You are a helpful assistant answering questions about the user's markdown document. Be concise. The current document is:\n\n\(context)",
-                messages: msgs)
-        default:
-            return
-        }
-
-        AIService.shared.complete(prompt) { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .success(let text):
-                self.webView.evaluateJavaScript("window.__aiResult && window.__aiResult(\(id), \(Renderer.jsStringLiteral(text)))")
-            case .failure(let err):
-                let msg = err.localizedDescription
-                self.webView.evaluateJavaScript("window.__aiError && window.__aiError(\(id), \(Renderer.jsStringLiteral(msg)))")
-            }
-        }
-    }
-
-    /// Runs arbitrary JS in the page (used by the AI menu items).
-    func runJS(_ js: String) { webView.evaluateJavaScript(js) }
-
-    // MARK: WKUIDelegate — lets the page use window.alert/confirm/prompt for AI dialogs.
-
-    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
-                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
-        let alert = NSAlert(); alert.messageText = message; alert.addButton(withTitle: "OK")
-        alert.runModal(); completionHandler()
-    }
-    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
-                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-        let alert = NSAlert(); alert.messageText = message
-        alert.addButton(withTitle: "OK"); alert.addButton(withTitle: "Cancel")
-        completionHandler(alert.runModal() == .alertFirstButtonReturn)
-    }
-    func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String,
-                 defaultText: String?, initiatedByFrame frame: WKFrameInfo,
-                 completionHandler: @escaping (String?) -> Void) {
-        let alert = NSAlert(); alert.messageText = prompt
-        alert.addButton(withTitle: "OK"); alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = defaultText ?? ""
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        completionHandler(alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil)
-    }
-
     /// Saves the document: pulls the live editor text from the page, then writes it.
     /// Falls back to the cached `lastText` when the page can't answer (e.g. the
-    /// error page is showing). Captures self strongly so a save triggered while
-    /// the window is closing still completes.
-    func save(completion: (() -> Void)? = nil) {
+    /// error page is showing). Untitled documents run a save panel first (default
+    /// name "Untitled.md"; the user may type any other name/extension).
+    /// Captures self strongly so a save triggered while the window is closing
+    /// still completes. `completion(false)` = the save didn't happen (panel
+    /// cancelled or write failed).
+    func save(completion: ((Bool) -> Void)? = nil) {
         webView.evaluateJavaScript("window.__getText ? window.__getText() : null") { result, _ in
             if let text = result as? String { self.lastText = text }
-            self.writeToDisk()
-            completion?()
+            if self.fileURL == nil {
+                self.saveAs(completion: completion)
+            } else {
+                completion?(self.writeToDisk())
+            }
+        }
+    }
+
+    /// First save of an Untitled document: ask where to put it. Defaults to .md
+    /// but `allowsOtherFileTypes` lets the user type any extension.
+    private func saveAs(completion: ((Bool) -> Void)?) {
+        guard let window = window else { completion?(false); return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Untitled.md"
+        if let md = UTType(filenameExtension: "md") { panel.allowedContentTypes = [md] }
+        panel.allowsOtherFileTypes = true
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: window) { resp in
+            guard resp == .OK, let url = panel.url else { completion?(false); return }
+            self.fileURL = url.resolvingSymlinksInPath()
+            let ok = self.writeToDisk()
+            if ok {
+                self.window?.title = self.displayName
+                self.startWatching()
+                // Re-render so <base href> points at the real folder (relative
+                // images now resolve) — editor content equals what was saved.
+                self.renderAndLoad()
+                (NSApp.delegate as? AppDelegate)?.documentDidGetFile(self)
+            }
+            completion?(ok)
         }
     }
 
     /// Writes the latest editor text back to the markdown file on disk.
-    private func writeToDisk() {
+    @discardableResult
+    private func writeToDisk() -> Bool {
+        guard let fileURL = fileURL else { return false }
         do {
             try lastText.write(to: fileURL, atomically: true, encoding: .utf8)
             // Treat our own write as already-seen so the poll doesn't reload it.
             lastModified = modificationDate()
             isDirty = false
             webView.evaluateJavaScript("window.__onSaved && window.__onSaved()")
+            return true
         } catch {
             let alert = NSAlert()
             alert.alertStyle = .warning
@@ -517,6 +310,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
             alert.informativeText = "\(fileURL.path)\n\n\(error.localizedDescription)"
             alert.addButton(withTitle: "OK")
             alert.runModal()
+            return false
         }
     }
 
@@ -536,8 +330,10 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     func findReplaceInPage() { webView.evaluateJavaScript("window.__findReplace && window.__findReplace()") }
 
     /// Re-renders the document from disk, deliberately discarding in-page edits
-    /// (the caller confirms with the user first when dirty).
+    /// (the caller confirms with the user first when dirty). No-op for Untitled
+    /// documents — there is no disk copy to reload.
     func reloadFromDisk() {
+        guard fileURL != nil else { NSSound.beep(); return }
         isDirty = false
         renderAndLoad()
     }
@@ -569,12 +365,13 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
 
 // MARK: - App delegate
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    var controllers: [URL: ViewerWindowController] = [:]
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+    /// All open documents, both file-backed and Untitled.
+    var controllers: [ViewerWindowController] = []
     private var wrapMenuItem: NSMenuItem?
     private var wrapOn = true
     private var aboutWindow: NSWindow?
-    private var aiSettings: AISettingsWindowController?
+    private let openRecentMenu = NSMenu(title: "Open Recent")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = true
@@ -598,18 +395,88 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    func openFile(_ url: URL) {
+    func openFile(_ url: URL, noteAsRecent: Bool = true) {
         let resolved = url.resolvingSymlinksInPath()
-        if let existing = controllers[resolved] {
+        if let existing = controllers.first(where: { $0.fileURL == resolved }) {
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
         let controller = ViewerWindowController(fileURL: resolved)
         controller.window?.delegate = self
-        controllers[resolved] = controller
+        controllers.append(controller)
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if noteAsRecent { noteRecent(resolved) }
+    }
+
+    /// File ▸ New: a blank Untitled document; the first save asks for a location
+    /// (default .md, any typed extension accepted).
+    @objc func newDocument(_ sender: Any?) {
+        let controller = ViewerWindowController(fileURL: nil)
+        controller.window?.delegate = self
+        controllers.append(controller)
+        controller.showWindow(nil)
+        controller.setEditorMode("edit")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Called by a controller after an Untitled document is saved for the first time.
+    func documentDidGetFile(_ controller: ViewerWindowController) {
+        if let url = controller.fileURL { noteRecent(url) }
+    }
+
+    // MARK: Recent files (persisted in UserDefaults, shown under File ▸ Open Recent)
+
+    private let recentsKey = "recentFiles"
+    private let recentsMax = 10
+
+    private func recentPaths() -> [String] {
+        return UserDefaults.standard.stringArray(forKey: recentsKey) ?? []
+    }
+
+    private func noteRecent(_ url: URL) {
+        var paths = recentPaths().filter { $0 != url.path }
+        paths.insert(url.path, at: 0)
+        if paths.count > recentsMax { paths = Array(paths.prefix(recentsMax)) }
+        UserDefaults.standard.set(paths, forKey: recentsKey)
+        // Also tell the system, so the Dock icon's right-click menu stays in sync.
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+    }
+
+    /// Rebuilds File ▸ Open Recent every time it's about to show.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === openRecentMenu else { return }
+        menu.removeAllItems()
+        let existing = recentPaths().filter { FileManager.default.fileExists(atPath: $0) }
+        for path in existing {
+            let item = NSMenuItem(title: (path as NSString).lastPathComponent,
+                                  action: #selector(openRecent(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = path
+            item.toolTip = path
+            menu.addItem(item)
+        }
+        if existing.isEmpty {
+            let none = NSMenuItem(title: "No Recent Files", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        }
+        menu.addItem(NSMenuItem.separator())
+        let clear = NSMenuItem(title: "Clear Menu", action: #selector(clearRecents(_:)), keyEquivalent: "")
+        clear.target = self
+        clear.isEnabled = !existing.isEmpty
+        menu.addItem(clear)
+    }
+
+    @objc private func openRecent(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        openFromString(path)
+    }
+
+    @objc private func clearRecents(_ sender: Any?) {
+        UserDefaults.standard.removeObject(forKey: recentsKey)
+        NSDocumentController.shared.clearRecentDocuments(nil)
     }
 
     private enum UnsavedChoice { case save, discard, cancel }
@@ -618,7 +485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func unsavedChangesChoice(for controller: ViewerWindowController) -> UnsavedChoice {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Do you want to save the changes you made to “\(controller.fileURL.lastPathComponent)”?"
+        alert.messageText = "Do you want to save the changes you made to “\(controller.displayName)”?"
         alert.informativeText = "Your changes will be lost if you don't save them."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Don't Save")
@@ -632,10 +499,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Warn before closing a window/tab that has unsaved edits.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard let controller = controllers.values.first(where: { $0.window === sender }),
+        guard let controller = controllers.first(where: { $0.window === sender }),
               controller.isDirty else { return true }
         switch unsavedChangesChoice(for: controller) {
-        case .save:    controller.save(); return true
+        case .save:
+            if controller.fileURL != nil { controller.save(); return true }
+            // Untitled: the save panel is asynchronous — keep the window open
+            // and only close it once the save actually succeeded.
+            controller.save { ok in if ok { sender.close() } }
+            return false
         case .discard: return true
         case .cancel:  return false
         }
@@ -647,7 +519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// saves have hit the disk.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         var toSave: [ViewerWindowController] = []
-        for controller in controllers.values where controller.isDirty {
+        for controller in controllers where controller.isDirty {
             controller.window?.makeKeyAndOrderFront(nil)
             switch unsavedChangesChoice(for: controller) {
             case .save:    toSave.append(controller)
@@ -657,8 +529,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard !toSave.isEmpty else { return .terminateNow }
         var remaining = toSave.count
+        var aborted = false
         for controller in toSave {
-            controller.save {
+            controller.save { ok in
+                if aborted { return }
+                // A cancelled save panel or failed write aborts the quit —
+                // terminating anyway would throw the unsaved document away.
+                if !ok { aborted = true; NSApp.reply(toApplicationShouldTerminate: false); return }
                 remaining -= 1
                 if remaining == 0 { NSApp.reply(toApplicationShouldTerminate: true) }
             }
@@ -668,15 +545,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
-        for (key, controller) in controllers where controller.window === window {
+        for controller in controllers where controller.window === window {
             controller.stop()
-            controllers.removeValue(forKey: key)
         }
+        controllers.removeAll { $0.window === window }
     }
 
     /// The controller backing the current key window, if any.
     private func keyController() -> ViewerWindowController? {
-        return controllers.values.first(where: { $0.window?.isKeyWindow == true })
+        return controllers.first(where: { $0.window?.isKeyWindow == true })
     }
 
     @objc func saveDocument(_ sender: Any?) { keyController()?.save() }
@@ -693,14 +570,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func performFind(_ sender: Any?) { keyController()?.findInPage() }
     @objc func performFindReplace(_ sender: Any?) { keyController()?.findReplaceInPage() }
-
-    @objc func aiImprove(_ sender: Any?) { keyController()?.runJS("window.__aiImprove && window.__aiImprove()") }
-    @objc func aiGenerate(_ sender: Any?) { keyController()?.runJS("window.__aiGenerate && window.__aiGenerate()") }
-    @objc func aiChat(_ sender: Any?) { keyController()?.runJS("window.__toggleChat && window.__toggleChat()") }
-    @objc func showAISettings(_ sender: Any?) {
-        if aiSettings == nil { aiSettings = AISettingsWindowController() }
-        aiSettings?.show()
-    }
 
     /// Called from the page (via the `setWrap` bridge action) to keep the menu checkmark synced.
     func updateWrapState(_ on: Bool) {
@@ -785,7 +654,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if controller.isDirty {
             let alert = NSAlert()
             alert.alertStyle = .warning
-            alert.messageText = "Reload “\(controller.fileURL.lastPathComponent)” from disk?"
+            alert.messageText = "Reload “\(controller.displayName)” from disk?"
             alert.informativeText = "Your unsaved changes will be lost."
             alert.addButton(withTitle: "Reload")
             alert.addButton(withTitle: "Cancel")
@@ -896,9 +765,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let fileMenuItem = NSMenuItem()
         mainMenu.addItem(fileMenuItem)
         let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "New", action: #selector(newDocument(_:)), keyEquivalent: "n")
         fileMenu.addItem(withTitle: "Open…", action: #selector(openDocument(_:)), keyEquivalent: "o")
         let openPathItem = fileMenu.addItem(withTitle: "Open Path…", action: #selector(openPath(_:)), keyEquivalent: "g")
         openPathItem.keyEquivalentModifierMask = [.command, .shift]
+        let openRecentItem = fileMenu.addItem(withTitle: "Open Recent", action: nil, keyEquivalent: "")
+        openRecentMenu.delegate = self   // rebuilt from UserDefaults on every open
+        openRecentItem.submenu = openRecentMenu
+        fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(withTitle: "Save", action: #selector(saveDocument(_:)), keyEquivalent: "s")
         let closeItem = fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         closeItem.target = nil
@@ -943,17 +817,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         viewMenu.addItem(withTitle: "Reload From Disk", action: #selector(reloadFromDisk(_:)), keyEquivalent: "r")
         viewMenuItem.submenu = viewMenu
 
-        // AI menu
-        let aiMenuItem = NSMenuItem()
-        mainMenu.addItem(aiMenuItem)
-        let aiMenu = NSMenu(title: "AI")
-        aiMenu.addItem(withTitle: "Improve Selection", action: #selector(aiImprove(_:)), keyEquivalent: "")
-        aiMenu.addItem(withTitle: "Generate & Insert…", action: #selector(aiGenerate(_:)), keyEquivalent: "")
-        aiMenu.addItem(withTitle: "Chat", action: #selector(aiChat(_:)), keyEquivalent: "")
-        aiMenu.addItem(NSMenuItem.separator())
-        aiMenu.addItem(withTitle: "Settings…", action: #selector(showAISettings(_:)), keyEquivalent: "")
-        aiMenuItem.submenu = aiMenu
-
         // Window menu (gives native tabbing items)
         let windowMenuItem = NSMenuItem()
         mainMenu.addItem(windowMenuItem)
@@ -964,135 +827,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.windowsMenu = windowMenu
 
         NSApp.mainMenu = mainMenu
-    }
-}
-
-// MARK: - AI Settings window
-
-/// Lets the user choose the active AI provider, edit its base URL + model, and store its
-/// API key in the Keychain. The key is entered by the user in a secure field and never echoed.
-final class AISettingsWindowController: NSObject {
-    private let window: NSWindow
-    private let popup = NSPopUpButton()
-    private let baseField = NSTextField()
-    private let modelField = NSTextField()
-    private let keyField = NSSecureTextField()
-    private let keyStatus = NSTextField(labelWithString: "")
-
-    override init() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 360),
-                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        super.init()
-        window.title = "AI Settings"
-        window.isReleasedWhenClosed = false
-
-        popup.addItems(withTitles: AI_PROVIDERS.map { $0.name })
-        popup.target = self
-        popup.action = #selector(providerChanged)
-        popup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        keyField.placeholderString = "Paste API key (stored in Keychain)"
-        keyStatus.font = .systemFont(ofSize: 11)
-        keyStatus.textColor = .secondaryLabelColor
-        keyStatus.lineBreakMode = .byTruncatingTail
-
-        let note = NSTextField(wrappingLabelWithString:
-            "Keys are stored per-provider in the macOS Keychain and aren't shown again. Base URL and model are editable so you can target the exact endpoint and model your account allows.")
-        note.font = .systemFont(ofSize: 11)
-        note.textColor = .secondaryLabelColor
-
-        let saveBtn = NSButton(title: "Save", target: self, action: #selector(save))
-        saveBtn.bezelStyle = .rounded
-        saveBtn.keyEquivalent = "\r"
-
-        // A label of fixed width + a field that stretches to fill the row.
-        func mkLabel(_ s: String) -> NSTextField {
-            let l = NSTextField(labelWithString: s)
-            l.alignment = .right
-            l.translatesAutoresizingMaskIntoConstraints = false
-            l.widthAnchor.constraint(equalToConstant: 78).isActive = true
-            l.setContentHuggingPriority(.required, for: .horizontal)
-            return l
-        }
-        func row(_ title: String, _ field: NSView) -> NSStackView {
-            field.translatesAutoresizingMaskIntoConstraints = false
-            field.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            let s = NSStackView(views: [mkLabel(title), field])
-            s.orientation = .horizontal
-            s.distribution = .fill
-            s.spacing = 10
-            return s
-        }
-
-        // Save button pushed to the right by a flexible spacer.
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let btnRow = NSStackView(views: [spacer, saveBtn])
-        btnRow.orientation = .horizontal
-        btnRow.distribution = .fill
-
-        let providerRow = row("Provider:", popup)
-        let baseRow = row("Base URL:", baseField)
-        let modelRow = row("Model:", modelField)
-        let keyRow = row("API Key:", keyField)
-        let statusRow = row("", keyStatus)
-
-        let rows: [NSView] = [providerRow, baseRow, modelRow, keyRow, statusRow, note, btnRow]
-        let stack = NSStackView(views: rows)
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 14
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let content = window.contentView!
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 26),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-        ])
-        // Make each row span the full width of the form.
-        for v in rows { v.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-
-        // Select the active provider and load its fields.
-        let active = AIService.shared.activeProvider()
-        if let idx = AI_PROVIDERS.firstIndex(where: { $0.id == active.id }) { popup.selectItem(at: idx) }
-        loadSelected()
-    }
-
-    func show() {
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func selectedProvider() -> AIProvider { AI_PROVIDERS[max(0, popup.indexOfSelectedItem)] }
-
-    private func loadSelected() {
-        let p = selectedProvider()
-        baseField.stringValue = AIService.shared.baseURL(for: p)
-        modelField.stringValue = AIService.shared.model(for: p)
-        keyField.stringValue = ""
-        keyStatus.stringValue = (Keychain.get(p.id)?.isEmpty == false) ? "✓ A key is stored for \(p.name)." : "No key stored for \(p.name)."
-    }
-
-    @objc private func providerChanged() { loadSelected() }
-
-    @objc private func save() {
-        let p = selectedProvider()
-        AIService.shared.setActive(p.id)
-        AIService.shared.setBaseURL(baseField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: p.id)
-        AIService.shared.setModel(modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: p.id)
-        let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !key.isEmpty {
-            if !Keychain.set(key, account: p.id) {
-                keyStatus.stringValue = "⚠️ Could not store the key in the Keychain. It was NOT saved."
-                return
-            }
-            keyField.stringValue = ""
-        }
-        keyStatus.stringValue = "Saved. " + ((Keychain.get(p.id)?.isEmpty == false) ? "✓ Key stored for \(p.name)." : "No key stored for \(p.name).")
     }
 }
 

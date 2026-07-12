@@ -3,182 +3,91 @@
 All notable changes to MarkdownViewer are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-This project follows [Semantic Versioning](https://semver.org/).
-
-## [2.4] — 2026-07-12
-
-### Added
-
-- **Design document** (`Resources/DESIGN.md`): how every feature works
-  end-to-end — rendering, security model, the save/dirty pipeline and its
-  data-loss invariants, live reload, undo, find, scroll sync, theming, AI
-  flows — plus the versioning policy and the platform-support story (universal
-  macOS binary; why Windows would require a shell rewrite). Reachable from a
-  new **Design** button in the About window.
-
-### Changed
-
-- `ARCHITECTURE.md` and `CLAUDE.md` refreshed to match the v1.1–v2.3 changes
-  (universal build, CSP/sanitizer, `__getText` save flow, new traps and
-  conventions).
-
-## [2.3] — 2026-07-12
-
-### Added
-
-- **Intel Mac support.** The build now compiles both `arm64` and `x86_64`
-  slices (macOS 11+) and merges them with `lipo` into a universal binary, so
-  the same `.app`/DMG runs natively on Apple Silicon and Intel. If one slice
-  can't be compiled on the build machine, the script warns and ships the other.
-
-## [2.2] — 2026-07-12
-
-### Changed
-
-- **Updated default AI models** to current generations: OpenAI `gpt-5.1`,
-  Anthropic `claude-sonnet-5`, Gemini `gemini-2.5-flash` (still user-editable
-  per provider in AI ▸ Settings…; existing overrides are untouched).
-- The code-block "Copied" green is now a `--success` theme variable (brighter
-  in dark mode) instead of a hardcoded color.
-- Open panel uses the modern `allowedContentTypes` API instead of the
-  deprecated `allowedFileTypes` (removes the last build warning).
-
-### Fixed
-
-- **Find matches by regex on the original text** instead of lowercasing the
-  whole document for comparison — offsets could drift (corrupting Replace) on
-  characters whose lowercase form changes length, e.g. Turkish `İ`.
-
-## [2.1] — 2026-07-12
-
-### Fixed
-
-- **AI Settings no longer claims "✓ Key stored" when the Keychain write failed.**
-  `SecItemAdd` errors were silently discarded; the status line now reports the
-  failure and keeps the entered key in the field so it isn't lost.
-
-## [2.0] — 2026-07-12
-
-### Security
-
-- **Rendered documents are now sandboxed by a Content-Security-Policy.**
-  Markdown may contain raw HTML, and previously nothing stopped a malicious
-  document from loading a remote `<script>` that could drive the native bridge —
-  including overwriting the file via the save action — or phone home. The
-  template now ships a CSP: only the bundled `file://` assets and the app's own
-  inline code may execute, and the page may not open any network connections.
-  Local and remote **images** still render as before.
-- **Rendered HTML is sanitized.** A CSP can't block inline event handlers (the
-  app's own scripts are inline), and those are the one raw-HTML vector that
-  `innerHTML` actually executes — `<img onerror="…">` ran arbitrary JS with
-  bridge access. The preview now strips all `on*` attributes and
-  `javascript:`/`vbscript:` URLs from rendered documents.
-- **Explicit `</script>` escaping.** A document containing a literal
-  `</script>` only failed to break out of the embedding script because
-  `JSONSerialization` happens to escape `/`. The escape is now explicit in both
-  the JSON path and the manual fallback (which previously lacked it).
-
-## [1.9] — 2026-07-12
-
-### Security
-
-- **Gemini API key no longer travels in the URL.** It was appended as a
-  `?key=` query parameter, which any proxy or server access log would capture.
-  It's now sent in the `x-goog-api-key` request header.
-
-## [1.8] — 2026-07-12
-
-### Fixed
-
-- **Multiple windows no longer stack exactly on top of each other.** Every
-  window shared one frame-autosave name, so they all restored to the identical
-  position and overwrote each other's saved frame. The first window keeps the
-  remembered frame; additional windows cascade down-right from it.
-
-## [1.7] — 2026-07-12
-
-### Fixed
-
-- **View ▸ Reload now actually re-renders from disk.** It previously triggered
-  `WKWebView.reload`, which just reloaded the stale temp HTML — external file
-  changes were never picked up and in-page edits were silently dropped. The menu
-  item (retitled "Reload From Disk", still ⌘R) re-renders the document and asks
-  for confirmation before discarding unsaved edits.
-- **Render-failure no longer causes a once-per-second reload loop.** The error
-  path never recorded the file's modification date, so the live-reload watcher
-  re-rendered the error page every tick, flickering forever.
-
-### Removed
-
-- Dead code: the unwired `reloadDocument(_:)` action and the empty
-  `navigationDidFinish()` stub.
-
-## [1.6] — 2026-07-12
-
-### Fixed
-
-- **Undo survived nothing.** Tab-inserts-spaces, Replace / Replace All, and the
-  AI insert/improve actions all rewrote `editor.value`, which wipes the
-  textarea's native undo stack — one Tab press and ⌘Z was dead. All programmatic
-  edits now go through a shared `spliceEditor()` helper built on
-  `document.execCommand('insertText')`, which WebKit records as a normal
-  undoable edit (Replace All is a single undo step). Falls back to the old
-  direct splice if `execCommand` is unavailable.
-
-## [1.5] — 2026-07-12
-
-### Fixed
-
-- **In-document anchor links (`[Jump](#section)`) now work.** They were doubly
-  broken: marked v12 no longer generates heading ids, and the `<base href>` used
-  for relative images made `#section` resolve against the file's *directory*,
-  navigating the view away from the document. The preview now assigns
-  GitHub-style slug ids to headings (deduped `-1`, `-2`, …) and intercepts
-  fragment clicks to smooth-scroll in place.
-
-## [1.4] — 2026-07-12
-
-### Fixed
-
-- **Documents containing the literal text `__TITLE__` rendered corrupted.** The
-  template substituted the markdown body *before* the title token, so any
-  `__TITLE__` inside the document itself was then replaced with the filename
-  (this repo's own CLAUDE.md triggered it). `__MARKDOWN__` is now always the
-  last token substituted.
-
-## [1.3] — 2026-07-12
-
-### Fixed
-
-- **Crash on a malformed AI Base URL.** The request builder force-unwrapped
-  `URL(string:)` on user-editable Settings input, so a base URL with a space (or
-  other invalid characters) crashed the app on the next AI request. It now throws
-  a descriptive "endpoint URL is invalid" error that surfaces as an alert.
+Versions bump by 0.1 per release batch.
 
 ## [1.2] — 2026-07-12
 
-### Fixed
+A full review-and-fix release: two data-loss bugs, a crash, several correctness
+and security fixes, Intel support, new file management features — and the AI
+assistant was removed.
 
-- **Quitting (⌘Q) discarded unsaved edits without asking.** The Save / Don't
-  Save / Cancel prompt only guarded window close (⌘W); quitting closed all
-  windows without consulting it. `applicationShouldTerminate` now walks every
-  dirty document, fronts its window, shows the same prompt, and defers
-  termination (`.terminateLater`) until all chosen saves have finished writing.
+### Added
 
-## [1.1] — 2026-07-12
+- **File ▸ New (⌘N).** Create a blank Untitled document. The first save opens a
+  save panel with **`Untitled.md`** pre-filled — keep `.md` or type any other
+  name/extension. Closing or quitting an unsaved Untitled document prompts, and
+  cancelling its save panel safely aborts the close/quit.
+- **File ▸ Open Recent.** The last 10 opened files, rebuilt live from
+  `UserDefaults` (missing files are hidden), with a Clear Menu item. Also feeds
+  the Dock icon's right-click recents.
+- **Intel Mac support.** The build compiles `arm64` + `x86_64` slices
+  (macOS 11+) and merges them with `lipo` into a universal binary.
+- **In-document anchor links work.** `[Jump](#section)` was doubly broken:
+  marked v12 emits no heading ids, and the `<base href>` made fragments
+  navigate away from the document. Headings now get GitHub-style slug ids
+  (deduped `-1`, `-2`, …) and fragment clicks smooth-scroll in place.
+- **Design document** (`Resources/DESIGN.md`) describing how every feature
+  works, reachable from a new **Design** button in the About window (next to
+  Changelog and Architecture).
+
+### Changed
+
+- **Code-block copy buttons are always visible** (brighten on hover) instead of
+  appearing only on hover — they were easy to miss entirely.
+- **View ▸ Reload From Disk (⌘R) actually re-renders from disk.** It previously
+  reloaded a stale temp file, never picking up external changes; it now
+  re-renders and asks before discarding unsaved edits.
+- Multiple windows **cascade** instead of stacking exactly on top of each other
+  (they all shared one frame-autosave name and fought over it).
+- The code-block "Copied" green is a `--success` theme variable (brighter in
+  dark mode) instead of a hardcoded color.
+- Open panel uses the modern `allowedContentTypes` API (removes the last build
+  warning).
 
 ### Fixed
 
 - **File ▸ Save could erase or stale-save the document.** The save path wrote a
-  cached copy of the editor text that started out *empty* and was only updated
-  250ms after typing — so clicking File ▸ Save on a freshly opened, unedited
-  document overwrote the file with an empty string, and saving right after an
-  external-change reload silently reverted the external edits. The cache is now
-  seeded from disk on every load/reload, and Save first asks the page for the
-  live editor text (new `window.__getText` hook), falling back to the cache only
-  if the page can't answer.
+  cached copy of the editor text that started out *empty* — clicking
+  File ▸ Save on a freshly opened, unedited document overwrote the file with an
+  empty string, and saving after an external-change reload silently reverted
+  the external edits. The cache is now seeded from disk on every load/reload,
+  and Save first asks the page for the live editor text.
+- **Quitting (⌘Q) discarded unsaved edits without asking.** The prompt only
+  guarded ⌘W; quit now walks every dirty document, shows the same prompt, and
+  defers termination until all chosen saves have finished writing.
+- **Undo survived nothing.** Tab-inserts-spaces and Replace / Replace All
+  rewrote `editor.value`, wiping the native undo stack — one Tab press and ⌘Z
+  was dead. All programmatic edits now go through undo-preserving
+  `execCommand('insertText')` (Replace All is a single undo step).
+- **Documents containing the literal text `__TITLE__` rendered corrupted** —
+  the template substituted the markdown body before the title token.
+  `__MARKDOWN__` is now always substituted last.
+- **Render failure no longer causes a once-per-second reload loop** (the error
+  page never recorded the file's modification date).
+- **Find matches by regex on the original text** instead of lowercasing the
+  whole document — offsets could drift (corrupting Replace) on characters whose
+  lowercase form changes length, e.g. Turkish `İ`.
 
-## [1.0] — 2026-07-12
+### Security
+
+- **Rendered documents are sandboxed.** Markdown may contain raw HTML;
+  previously a malicious document could run script (via inline event handlers)
+  with access to the native bridge — including overwriting the file — or load
+  remote code. Now: a Content-Security-Policy blocks remote scripts and all
+  network connections from the page; the preview strips `on*` attributes and
+  `javascript:`/`vbscript:` URLs after every render; and `</script>` inside a
+  document is explicitly escaped instead of relying on implicit
+  `JSONSerialization` behavior. Local and remote images still render.
+
+### Removed
+
+- **The entire AI assistant** (chat panel, Improve Selection,
+  Generate & Insert, provider settings, Keychain key storage, all networking
+  code). The app makes no network requests at all now. Any API keys previously
+  stored remain in the macOS Keychain under `com.dave.markdownviewer.ai` —
+  delete them with Keychain Access if you no longer want them.
+
+## [1.1] — 2026-07-12
 
 ### Added
 
@@ -189,7 +98,7 @@ This project follows [Semantic Versioning](https://semver.org/).
   terminal. Shows a "File not found" alert rather than failing silently.
 
 - **Copy button on fenced code blocks.** Each code block in the preview gets a
-  hover button in its top-right corner that copies exactly the text between the
+  button in its top-right corner that copies exactly the text between the
   ``` fences. Shows a "Copied" check for 1.5s. Falls back to a hidden textarea and
   `document.execCommand('copy')` because `navigator.clipboard` is not reliably
   permitted in a `file://` WKWebView.
@@ -239,7 +148,7 @@ This project follows [Semantic Versioning](https://semver.org/).
   returns a descriptive error string that the web view displays, and it creates the
   temp directory immediately before writing.
 
-## [0.9] — 2026-06-19 (initial release)
+## [1.0] — 2026-06-19 (initial release)
 
 ### Added
 
@@ -250,6 +159,6 @@ This project follows [Semantic Versioning](https://semver.org/).
 - Light / Dark / System theme toggle, following the OS in System mode.
 - Live reload on file change, preserving scroll position.
 - Multiple files open as native window tabs.
-- Preview / Edit / Split modes, save, find & replace, and an AI chat panel.
+- Preview / Edit / Split modes, save, and find & replace.
 - Hand-rolled `build.sh` (no Xcode project): compiles with `swiftc`, assembles and
   ad-hoc signs the `.app`, and registers it with Launch Services.
