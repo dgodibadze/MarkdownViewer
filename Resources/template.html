@@ -2,6 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- CSP: documents can contain raw HTML, so without this a malicious .md could
+     load a remote script that talks to the native bridge (including "save").
+     Scripts/styles: bundled file:// assets + our inline code only. Images may
+     be local or remote; nothing on the page may open network connections. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file: 'unsafe-inline'; style-src file: 'unsafe-inline'; img-src file: data: https: http:; media-src file: data:; font-src file: data:; connect-src 'none'">
 <base href="__BASE__">
 <title>__TITLE__</title>
 
@@ -339,6 +344,7 @@ const MD = __MARKDOWN__;
     if (window.marked) {
       marked.setOptions({ gfm: true, breaks: false });
       content.innerHTML = marked.parse(text);
+      sanitize(content);
     } else {
       content.textContent = text;
     }
@@ -349,6 +355,24 @@ const MD = __MARKDOWN__;
     }
     addHeadingIds(content);
     addCopyButtons(content);
+  }
+
+  // ---- Sanitize rendered HTML ----
+  // Markdown may contain raw HTML. innerHTML already neutralizes <script>
+  // tags (the parser never executes them), so the live XSS vectors are inline
+  // event handlers (onerror=, onclick=, …) and javascript: URLs — strip both.
+  // The CSP in <head> backstops everything else (remote scripts, fetch/XHR).
+  function sanitize(root) {
+    root.querySelectorAll('*').forEach(function (el) {
+      for (var i = el.attributes.length - 1; i >= 0; i--) {
+        var name = el.attributes[i].name;
+        if (name.slice(0, 2).toLowerCase() === 'on') { el.removeAttribute(name); continue; }
+        if (name === 'href' || name === 'src' || name === 'xlink:href') {
+          var v = (el.attributes[i].value || '').replace(/[\s\u0000-\u001f]+/g, '').toLowerCase();
+          if (v.indexOf('javascript:') === 0 || v.indexOf('vbscript:') === 0) el.removeAttribute(name);
+        }
+      }
+    });
   }
 
   // ---- In-document anchor links ----

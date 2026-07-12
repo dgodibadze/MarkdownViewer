@@ -5,6 +5,27 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0] — 2026-07-12
+
+### Security
+
+- **Rendered documents are now sandboxed by a Content-Security-Policy.**
+  Markdown may contain raw HTML, and previously nothing stopped a malicious
+  document from loading a remote `<script>` that could drive the native bridge —
+  including overwriting the file via the save action — or phone home. The
+  template now ships a CSP: only the bundled `file://` assets and the app's own
+  inline code may execute, and the page may not open any network connections.
+  Local and remote **images** still render as before.
+- **Rendered HTML is sanitized.** A CSP can't block inline event handlers (the
+  app's own scripts are inline), and those are the one raw-HTML vector that
+  `innerHTML` actually executes — `<img onerror="…">` ran arbitrary JS with
+  bridge access. The preview now strips all `on*` attributes and
+  `javascript:`/`vbscript:` URLs from rendered documents.
+- **Explicit `</script>` escaping.** A document containing a literal
+  `</script>` only failed to break out of the embedding script because
+  `JSONSerialization` happens to escape `/`. The escape is now explicit in both
+  the JSON path and the manual fallback (which previously lacked it).
+
 ## [1.9] — 2026-07-12
 
 ### Security

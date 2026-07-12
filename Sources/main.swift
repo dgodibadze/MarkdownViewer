@@ -248,7 +248,10 @@ enum Renderer {
             var t = arr
             t.removeFirst()
             t.removeLast()
-            return t
+            // A literal "</script>" inside the document would terminate the
+            // inline <script> that embeds it. JSONSerialization happens to
+            // escape "/" already, but don't rely on that implicitly.
+            return t.replacingOccurrences(of: "</", with: "<\\/")
         }
         // Fallback: minimal manual escaping.
         let escaped = s
@@ -256,6 +259,7 @@ enum Renderer {
             .replacingOccurrences(of: "\"", with: "\\\"")
             .replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "</", with: "<\\/")
         return "\"\(escaped)\""
     }
 
