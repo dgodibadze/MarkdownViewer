@@ -133,8 +133,8 @@ See [`windows/README.md`](windows/README.md) for details.
 | Reload from disk | `⌘R` | `Ctrl+R` or `F5` |
 | Zoom in / out / reset | `⌘+` / `⌘−` / `⌘0` | `Ctrl +` / `Ctrl −` / `Ctrl 0` |
 
-Try it on the staged demo docs in [`docs/examples/`](docs/examples) —
-[`showcase.md`](docs/examples/showcase.md) exercises everything the renderer does.
+Try it on the staged demo docs in [`docs/examples/`](docs/examples) — three
+one-page documents covering tables, task lists, highlighted code, and quotes.
 
 ## How it works
 

@@ -2,6 +2,8 @@
 
 The main `README.md` embeds the four shots below. Staged example documents live
 in [`docs/examples/`](../examples) so captures look consistent between refreshes.
+Each example fits a single page at the default window size — **no scrolling
+needed for any shot**.
 
 **How to capture (macOS):** press `⇧⌘4`, then **Space**, then **Option-click**
 the window (Option omits the drop shadow; plain click keeps it — either is fine,
@@ -9,9 +11,9 @@ just be consistent). Save/rename the PNGs into this folder with these exact name
 
 | Filename | How to stage it |
 |---|---|
-| `split.png` | Open `docs/examples/showcase.md` → **Split** (`⌘3`) → **light** theme. Scroll so the Swift code block and the table are visible. The hero shot. |
+| `split.png` | Open `docs/examples/showcase.md` → **Split** (`⌘3`) → **light** theme. Everything fits on one page. The hero shot. |
 | `preview-dark.png` | Open `docs/examples/release-notes.md` → **Preview** (`⌘1`) → **dark** theme. Hover a code block so its **Copy** button shows. |
-| `find-replace.png` | Open `docs/examples/meeting-notes.md` → `⌥⌘F` (Find & Replace) → type `Priya` in Find so the match counter shows (e.g. `1/3`). |
+| `find-replace.png` | Open `docs/examples/meeting-notes.md` → **Split** (`⌘3`) → `⌥⌘F` (Find & Replace) → type `Priya` in Find. All three matches highlight in the editor pane and the counter shows `1/3`. |
 | `about.png` | **MarkdownViewer ▸ About** — icon, version, and the Changelog / Architecture / Design buttons. |
 
 Tips:
