@@ -47,14 +47,17 @@ enum AIError: LocalizedError {
 /// Minimal Keychain wrapper: one generic-password item per provider id.
 enum Keychain {
     static let service = "com.dave.markdownviewer.ai"
-    static func set(_ value: String, account: String) {
+    /// Stores the key; returns false (with a reason) when the write fails so the
+    /// UI never claims a key is saved when it isn't.
+    @discardableResult
+    static func set(_ value: String, account: String) -> Bool {
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service,
                                     kSecAttrAccount as String: account]
         SecItemDelete(base as CFDictionary)
-        guard let data = value.data(using: .utf8) else { return }
+        guard let data = value.data(using: .utf8) else { return false }
         var add = base; add[kSecValueData as String] = data
-        SecItemAdd(add as CFDictionary, nil)
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
     static func get(_ account: String) -> String? {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
@@ -1078,7 +1081,10 @@ final class AISettingsWindowController: NSObject {
         AIService.shared.setModel(modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines), for: p.id)
         let key = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if !key.isEmpty {
-            Keychain.set(key, account: p.id)
+            if !Keychain.set(key, account: p.id) {
+                keyStatus.stringValue = "⚠️ Could not store the key in the Keychain. It was NOT saved."
+                return
+            }
             keyField.stringValue = ""
         }
         keyStatus.stringValue = "Saved. " + ((Keychain.get(p.id)?.isEmpty == false) ? "✓ Key stored for \(p.name)." : "No key stored for \(p.name).")

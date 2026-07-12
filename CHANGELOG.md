@@ -5,6 +5,14 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [2.1] — 2026-07-12
+
+### Fixed
+
+- **AI Settings no longer claims "✓ Key stored" when the Keychain write failed.**
+  `SecItemAdd` errors were silently discarded; the status line now reports the
+  failure and keeps the entered key in the field so it isn't lost.
+
 ## [2.0] — 2026-07-12
 
 ### Security
