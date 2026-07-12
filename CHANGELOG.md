@@ -5,6 +5,25 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [1.3] — 2026-07-12
+
+### Added
+
+- **Windows port brought to full parity.** The C# + WebView2 port (`windows/`,
+  contributed via GitHub) was forked from the pre-1.2 app; it has been reviewed
+  and updated to match 1.2: all data-loss/save fixes (live-text pull, cache
+  seeded from disk, close/exit guards that respect a cancelled save), token
+  substitution order, CSP + HTML sanitizer, working anchor links,
+  undo-preserving edits, File ▸ New (`Ctrl+N`), Open Recent, Reload From Disk,
+  always-visible copy buttons — and the AI assistant is removed there too
+  (previously-stored DPAPI keys remain in `%APPDATA%\MarkdownViewer\keys` until
+  deleted). Its template is now *regenerated* from the shared Mac template plus
+  a small fixed delta (bridge, fonts, Ctrl shortcut labels). Also fixed: the
+  Windows build referenced the deleted `Resources/CHANGELOG.md` and would not
+  have compiled.
+- **New documents open in Split mode** on both platforms, so you can type and
+  see the preview immediately.
+
 ## [1.2] — 2026-07-12
 
 A full review-and-fix release: two data-loss bugs, a crash, several correctness

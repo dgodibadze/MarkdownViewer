@@ -21,10 +21,16 @@ code blocks. It is fully offline — the AI assistant was removed in v1.2.
   document types, window/tab management, the native menu bar, live-reload file
   watching, recent files, save/save-as, and one `WKWebView` per open document.
 - **`Resources/template.html`** — the entire UI *inside* the web view: toolbar,
-  editor textarea, rendered preview, find bar, chat panel, theme system, zoom,
-  code-block copy buttons. All CSS/JS is inline in this one file.
+  editor textarea, rendered preview, find bar, theme system, zoom, code-block
+  copy buttons. All CSS/JS is inline in this one file.
+- **`windows/Program.cs`** — the native Windows port (C# + WinForms + WebView2),
+  a behavioral mirror of `main.swift`. **Any behavior change in `main.swift`
+  must be mirrored there**, and `windows/Resources/template.html` is
+  *regenerated* from the Mac template plus a fixed delta (bridge, fonts,
+  Ctrl labels, in-page shortcut block, `__escape` hook — see DESIGN.md ▸
+  Platform support). Never hand-edit only one template.
 
-Everything else (Info.plist, build.sh, Icon/, dmg/) is packaging.
+Everything else (Info.plist, build.sh, Icon/, dmg/, install.*) is packaging.
 
 ### How rendering works
 
@@ -160,22 +166,24 @@ Both have caught real errors. They do not replace an actual build.
 
 ## State as of this handoff
 
-Clean tree; app is at **v1.2** (2026-07-12) — see `CHANGELOG.md` for the full
-combined release notes. Highlights: save/quit data-loss fixes, CSP + sanitizer,
-undo-preserving edits, working anchor links, File ▸ New (Untitled → save panel,
-default .md, any typed extension accepted), File ▸ Open Recent, universal
-binary (arm64 + x86_64), always-visible code-block copy buttons — and the
-**entire AI assistant was removed** (no networking code remains; don't
-reintroduce it without being asked; the old implementation is in git history
-in the earlier v2.x-numbered commits).
+Clean tree; app is at **v1.3** (2026-07-12) — see `CHANGELOG.md` for release
+notes. v1.2 was the big review release (save/quit data-loss fixes, CSP +
+sanitizer, undo-preserving edits, anchor links, File ▸ New, Open Recent,
+universal binary, **AI assistant removed** — no networking code remains; don't
+reintroduce it without being asked; the old implementation is in git history).
+v1.3 merged the owner's **Windows port** (`windows/`, C# + WinForms + WebView2)
+and brought it to full parity with v1.2 — all fixes applied, AI removed there
+too, template regenerated from the shared one — plus: new documents open in
+**Split** mode on both platforms (via a deferred `startMode` applied on
+navigation-finish; calling `__setMode` before page load is a silent no-op).
 
-Note on git history: commits between the "v1.0 baseline" and "v1.2" carry
-interim v1.1–v2.4 numbering from a per-fix versioning experiment that was
-rolled back into the single 1.2 release — trust CHANGELOG.md, not those commit
-titles, for version mapping.
+Notes: (1) commits between "v1.0 baseline" and "v1.2" carry interim v1.1–v2.4
+numbering from a per-fix versioning experiment that was rolled back — trust
+CHANGELOG.md for version mapping. (2) The Windows build (`windows/build.ps1`)
+requires a Windows machine with the .NET 8 SDK; the C# changes in v1.3 were
+statically reviewed but **not compiled** (no dotnet on this Mac) — build on
+Windows before releasing.
 
-Windows support is deliberately out of scope (AppKit/WKWebView shell); see
-DESIGN.md → Platform support. Known future-feature backlog (unimplemented):
-PDF export/print, TOC sidebar, Mermaid/KaTeX, clickable task checkboxes,
-Dock-reopen / proxy-icon polish, file-descriptor watching instead of 1 Hz
-polling.
+Known future-feature backlog (unimplemented): PDF export/print, TOC sidebar,
+Mermaid/KaTeX, clickable task checkboxes, Dock-reopen / proxy-icon polish,
+file-descriptor watching instead of 1 Hz polling.

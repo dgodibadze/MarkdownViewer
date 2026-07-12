@@ -131,6 +131,10 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     private(set) var isDirty = false
     /// Latest editor text pushed from the page, used for menu/close-triggered saves.
     private var lastText: String = ""
+    /// Mode to force once the page finishes loading (e.g. "split" for new
+    /// documents). Calling __setMode before the page loads is a silent no-op,
+    /// so this is applied from didFinish instead.
+    var startMode: String?
 
     var displayName: String { fileURL?.lastPathComponent ?? "Untitled" }
 
@@ -346,6 +350,13 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         try? FileManager.default.removeItem(at: tempFile)
     }
 
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let mode = startMode {
+            startMode = nil
+            setEditorMode(mode)
+        }
+    }
+
     // Open http/https links in the default browser; allow local navigation.
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationAction: WKNavigationAction,
@@ -410,14 +421,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         if noteAsRecent { noteRecent(resolved) }
     }
 
-    /// File ▸ New: a blank Untitled document; the first save asks for a location
-    /// (default .md, any typed extension accepted).
+    /// File ▸ New: a blank Untitled document opening in Split mode; the first
+    /// save asks for a location (default .md, any typed extension accepted).
     @objc func newDocument(_ sender: Any?) {
         let controller = ViewerWindowController(fileURL: nil)
+        controller.startMode = "split"
         controller.window?.delegate = self
         controllers.append(controller)
         controller.showWindow(nil)
-        controller.setEditorMode("edit")
         NSApp.activate(ignoringOtherApps: true)
     }
 

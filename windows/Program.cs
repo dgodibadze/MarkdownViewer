@@ -1,51 +1,17 @@
 // MarkdownViewer for Windows — a port of the macOS app (Sources/main.swift).
 // One C# file drives a WebView2 per tab that renders the bundled HTML template;
 // C# ↔ JS talk over the same small message bridge the Mac app uses.
+// Keep behavior in sync with main.swift — both implement the pipeline described
+// in Resources/DESIGN.md (rendering, save/dirty invariants, live reload).
 
 using System.Diagnostics;
 using System.IO.Pipes;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
 namespace MarkdownViewer;
-
-// MARK: - AI providers, secret store, networking
-
-enum ProviderKind { OpenAI, Anthropic, Gemini }
-
-sealed class AIProvider
-{
-    public string Id;
-    public string Name;
-    public ProviderKind Kind;
-    public string DefaultBaseUrl;
-    public string DefaultModel;
-}
-
-static class Providers
-{
-    // Built-in providers. Base URL + model are user-editable in Settings, so unusual or new
-    // endpoints (and the exact model ids each account has access to) can be corrected by the user.
-    public static readonly AIProvider[] All =
-    {
-        new AIProvider { Id = "groq",      Name = "Groq",        Kind = ProviderKind.OpenAI,
-                         DefaultBaseUrl = "https://api.groq.com/openai/v1",            DefaultModel = "llama-3.3-70b-versatile" },
-        new AIProvider { Id = "nous",      Name = "Nous Portal", Kind = ProviderKind.OpenAI,
-                         DefaultBaseUrl = "https://inference-api.nousresearch.com/v1", DefaultModel = "Hermes-3-Llama-3.1-70B" },
-        new AIProvider { Id = "openai",    Name = "OpenAI",      Kind = ProviderKind.OpenAI,
-                         DefaultBaseUrl = "https://api.openai.com/v1",                 DefaultModel = "gpt-4o" },
-        new AIProvider { Id = "anthropic", Name = "Anthropic",   Kind = ProviderKind.Anthropic,
-                         DefaultBaseUrl = "https://api.anthropic.com",                 DefaultModel = "claude-3-5-sonnet-latest" },
-        new AIProvider { Id = "gemini",    Name = "Gemini",      Kind = ProviderKind.Gemini,
-                         DefaultBaseUrl = "https://generativelanguage.googleapis.com/v1beta", DefaultModel = "gemini-1.5-flash" },
-    };
-}
-
-sealed class ChatMessage { public string Role; public string Content; }   // role: "user" | "assistant"
-sealed class AIPrompt { public string System; public List<ChatMessage> Messages = new(); }
 
 /// Simple persisted settings (the Windows analog of UserDefaults): a JSON
 /// dictionary in %APPDATA%\MarkdownViewer\settings.json.
@@ -87,156 +53,6 @@ static class Settings
     }
 }
 
-/// Minimal secret store: one DPAPI-encrypted file per provider id (the Windows
-/// analog of the macOS Keychain). Keys are encrypted for the current user.
-static class SecretStore
-{
-    static string KeyPath(string account) => Path.Combine(Settings.Dir, "keys", account + ".bin");
-
-    public static void Set(string value, string account)
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.Combine(Settings.Dir, "keys"));
-            var enc = ProtectedData.Protect(Encoding.UTF8.GetBytes(value), null, DataProtectionScope.CurrentUser);
-            File.WriteAllBytes(KeyPath(account), enc);
-        }
-        catch { /* best-effort */ }
-    }
-
-    public static string Get(string account)
-    {
-        try
-        {
-            var path = KeyPath(account);
-            if (!File.Exists(path)) return null;
-            var dec = ProtectedData.Unprotect(File.ReadAllBytes(path), null, DataProtectionScope.CurrentUser);
-            return Encoding.UTF8.GetString(dec);
-        }
-        catch { return null; }
-    }
-}
-
-/// Builds and sends provider requests. Reads the active provider + overrides from Settings.
-static class AIService
-{
-    static readonly HttpClient http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-
-    public static AIProvider ActiveProvider()
-    {
-        var id = Settings.Get("ai.activeProvider") ?? "groq";
-        return Providers.All.FirstOrDefault(p => p.Id == id) ?? Providers.All[0];
-    }
-    public static string BaseUrl(AIProvider p)
-    {
-        var v = Settings.Get("ai.baseURL." + p.Id);
-        return string.IsNullOrEmpty(v) ? p.DefaultBaseUrl : v;
-    }
-    public static string Model(AIProvider p)
-    {
-        var v = Settings.Get("ai.model." + p.Id);
-        return string.IsNullOrEmpty(v) ? p.DefaultModel : v;
-    }
-    public static void SetActive(string id) => Settings.Set("ai.activeProvider", id);
-    public static void SetBaseUrl(string v, string id) => Settings.Set("ai.baseURL." + id, v);
-    public static void SetModel(string v, string id) => Settings.Set("ai.model." + id, v);
-
-    public static async Task<string> Complete(AIPrompt prompt)
-    {
-        var p = ActiveProvider();
-        var key = SecretStore.Get(p.Id);
-        if (string.IsNullOrEmpty(key))
-            throw new Exception($"No API key set for {p.Name}. Open AI ▸ Settings… to add one.");
-
-        using var req = BuildRequest(p, key, prompt);
-        using var resp = await http.SendAsync(req);
-        var body = await resp.Content.ReadAsStringAsync();
-        if ((int)resp.StatusCode >= 400)
-        {
-            var msg = body.Length > 300 ? body.Substring(0, 300) : body;
-            throw new Exception($"AI request failed (HTTP {(int)resp.StatusCode}). {msg}");
-        }
-        return Parse(p.Kind, body);
-    }
-
-    static HttpRequestMessage BuildRequest(AIProvider p, string key, AIPrompt prompt)
-    {
-        var baseUrl = BaseUrl(p).TrimEnd('/');
-        var mdl = Model(p);
-        HttpRequestMessage req;
-        object json;
-
-        switch (p.Kind)
-        {
-            case ProviderKind.OpenAI:
-            {
-                req = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/chat/completions");
-                req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + key);
-                var msgs = new List<object> { new { role = "system", content = prompt.System } };
-                msgs.AddRange(prompt.Messages.Select(m => (object)new { role = m.Role, content = m.Content }));
-                json = new { model = mdl, messages = msgs };
-                break;
-            }
-            case ProviderKind.Anthropic:
-            {
-                req = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/v1/messages");
-                req.Headers.TryAddWithoutValidation("x-api-key", key);
-                req.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-                var msgs = prompt.Messages.Select(m => new { role = m.Role, content = m.Content });
-                json = new { model = mdl, max_tokens = 2048, system = prompt.System, messages = msgs };
-                break;
-            }
-            default: // Gemini
-            {
-                req = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/models/{mdl}:generateContent?key={key}");
-                var contents = prompt.Messages.Select(m => new
-                {
-                    role = m.Role == "assistant" ? "model" : "user",
-                    parts = new[] { new { text = m.Content } }
-                });
-                json = new
-                {
-                    systemInstruction = new { parts = new[] { new { text = prompt.System } } },
-                    contents
-                };
-                break;
-            }
-        }
-        req.Content = new StringContent(JsonSerializer.Serialize(json), Encoding.UTF8, "application/json");
-        return req;
-    }
-
-    static string Parse(ProviderKind kind, string body)
-    {
-        using var doc = JsonDocument.Parse(body);
-        var root = doc.RootElement;
-        switch (kind)
-        {
-            case ProviderKind.OpenAI:
-                if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0 &&
-                    choices[0].TryGetProperty("message", out var msg) &&
-                    msg.TryGetProperty("content", out var text))
-                    return text.GetString();
-                break;
-            case ProviderKind.Anthropic:
-                if (root.TryGetProperty("content", out var content))
-                    foreach (var block in content.EnumerateArray())
-                        if (block.TryGetProperty("type", out var t) && t.GetString() == "text" &&
-                            block.TryGetProperty("text", out var txt))
-                            return txt.GetString();
-                break;
-            case ProviderKind.Gemini:
-                if (root.TryGetProperty("candidates", out var cands) && cands.GetArrayLength() > 0 &&
-                    cands[0].TryGetProperty("content", out var c) &&
-                    c.TryGetProperty("parts", out var parts) && parts.GetArrayLength() > 0 &&
-                    parts[0].TryGetProperty("text", out var gt))
-                    return gt.GetString();
-                break;
-        }
-        throw new Exception("The AI service returned an unexpected response.");
-    }
-}
-
 // MARK: - Markdown rendering
 
 /// Builds the full HTML document for a markdown file by substituting tokens
@@ -248,7 +64,8 @@ static class Renderer
     public static string ResourcesDir =>
         Path.Combine(AppContext.BaseDirectory, "Resources");
 
-    /// Renders the markdown file into `tempFile`.
+    /// Renders the markdown file (or an empty untitled document when
+    /// `markdownFile` is null) into `tempFile`.
     /// Returns null on success, or a human-readable error string on failure.
     public static string Render(string markdownFile, string tempFile)
     {
@@ -260,19 +77,34 @@ static class Renderer
         catch (Exception e) { return $"Could not read bundled template at {tplPath}.\n{e.Message}"; }
 
         string mdText;
-        try { mdText = File.ReadAllText(markdownFile); }   // UTF-8 with BOM detection, lossy on bad bytes
-        catch (Exception e) { return $"Could not read the markdown file.\n{e.Message}"; }
+        if (markdownFile != null)
+        {
+            try { mdText = File.ReadAllText(markdownFile); }   // UTF-8 with BOM detection, lossy on bad bytes
+            catch (Exception e) { return $"Could not read the markdown file.\n{e.Message}"; }
+        }
+        else
+        {
+            mdText = "";
+        }
 
         // Resources directory as a file:// URL string (assets live here).
         var resDir = new Uri(ResourcesDir).AbsoluteUri.TrimEnd('/');
         // Markdown file's directory for resolving relative images/links (needs trailing slash).
-        var dir = Path.GetDirectoryName(Path.GetFullPath(markdownFile)) ?? "";
+        // Untitled documents have no directory yet — use the user profile as a placeholder.
+        var dir = markdownFile != null
+            ? Path.GetDirectoryName(Path.GetFullPath(markdownFile)) ?? ""
+            : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var baseDir = new Uri(dir + Path.DirectorySeparatorChar).AbsoluteUri;
+        var title = markdownFile != null ? Path.GetFileName(markdownFile) : "Untitled";
 
+        // __MARKDOWN__ must be substituted LAST: it injects arbitrary document
+        // text, and any token replaced after it would also match occurrences of
+        // that token *inside* the document (e.g. a markdown file that mentions
+        // "__TITLE__" literally would get corrupted).
         template = template.Replace("__RES__", resDir);
         template = template.Replace("__BASE__", baseDir);
+        template = template.Replace("__TITLE__", HtmlEscape(title));
         template = template.Replace("__MARKDOWN__", JsString(mdText));
-        template = template.Replace("__TITLE__", HtmlEscape(Path.GetFileName(markdownFile)));
 
         try
         {
@@ -296,13 +128,14 @@ static class Renderer
 
 // MARK: - Viewer tab
 
-/// One open markdown file: a TabPage hosting a WebView2, with live reload,
+/// One open document: a TabPage hosting a WebView2, with live reload,
 /// dirty tracking, and the JS message bridge (the analog of the Mac app's
 /// ViewerWindowController — Windows uses tabs in one window instead of
-/// macOS native window tabbing).
+/// macOS native window tabbing). FilePath == null means a new, never-saved
+/// "Untitled" document; the first save asks where to put it.
 sealed class ViewerTab : TabPage
 {
-    public readonly string FilePath;
+    public string FilePath { get; private set; }
     readonly MainForm host;
     readonly WebView2 web = new WebView2 { Dock = DockStyle.Fill };
     readonly string tempFile;
@@ -312,16 +145,23 @@ sealed class ViewerTab : TabPage
     /// True when the in-page editor has unsaved changes. While dirty, the
     /// external-change live-reload is suspended so it can't clobber edits.
     public bool IsDirty { get; private set; }
-    /// Latest editor text pushed from the page, used for menu/close-triggered saves.
+    /// Latest editor text pushed from the page — the fallback for saves when
+    /// the page can't answer. Seeded from disk on every load/reload so a save
+    /// before any edit can never write an empty or stale copy.
     string lastText = "";
+    /// Mode to force once the page finishes loading (e.g. "split" for new
+    /// documents). Calling __setMode before the page loads is a silent no-op,
+    /// so this is applied from NavigationCompleted instead.
+    public string StartMode;
+
+    public string DisplayName => FilePath != null ? Path.GetFileName(FilePath) : "Untitled";
 
     public ViewerTab(MainForm host, string filePath)
     {
         this.host = host;
-        FilePath = Path.GetFullPath(filePath);
-        lastText = "";
-        Text = Path.GetFileName(FilePath);
-        ToolTipText = FilePath;
+        FilePath = filePath != null ? Path.GetFullPath(filePath) : null;
+        Text = DisplayName;
+        ToolTipText = FilePath ?? "Unsaved document";
         var tmpDir = Path.Combine(Path.GetTempPath(), "MarkdownViewer");
         tempFile = Path.Combine(tmpDir, $"view-{Guid.NewGuid()}.html");
         Controls.Add(web);
@@ -350,8 +190,12 @@ sealed class ViewerTab : TabPage
         {
             if (e.KeyCode == Keys.Escape) { e.Handled = true; RunJS("window.__escape && window.__escape()"); }
         };
-        // Give the page keyboard focus once it has loaded, so typing works immediately.
-        web.CoreWebView2.NavigationCompleted += (_, __) => { if (host.ActiveTab == this) FocusWeb(); };
+        // Apply a deferred start mode, then give the page keyboard focus.
+        web.CoreWebView2.NavigationCompleted += (_, __) =>
+        {
+            if (StartMode != null) { var m = StartMode; StartMode = null; SetEditorMode(m); }
+            if (host.ActiveTab == this) FocusWeb();
+        };
         // Open http/https/mailto links in the default browser; allow local navigation.
         web.CoreWebView2.NavigationStarting += (_, e) =>
         {
@@ -372,7 +216,7 @@ sealed class ViewerTab : TabPage
 
         RenderAndLoad();
         watchTimer.Tick += WatchTick;
-        watchTimer.Start();
+        StartWatching();
     }
 
     static void OpenExternal(string uri)
@@ -388,18 +232,32 @@ sealed class ViewerTab : TabPage
             var safe = Renderer.HtmlEscape(err);
             var html = "<html><body style='font-family:Segoe UI,sans-serif;padding:2rem;white-space:pre-wrap'>"
                      + "<h3>MarkdownViewer could not render</h3>"
-                     + $"<b>File:</b> {Renderer.HtmlEscape(FilePath)}<br><br>{safe}</body></html>";
+                     + $"<b>File:</b> {Renderer.HtmlEscape(FilePath ?? "Untitled")}<br><br>{safe}</body></html>";
             web.CoreWebView2?.NavigateToString(html);
+            // Mark the current mtime as seen even on failure — otherwise the
+            // 1 Hz watcher re-renders the error page every second, forever.
+            lastModified = ModificationDate();
             return;
         }
         web.CoreWebView2?.Navigate(new Uri(tempFile).AbsoluteUri);
         lastModified = ModificationDate();
+        // Seed the save cache with what's actually on disk. Without this, a
+        // menu-triggered Save before any edit would write "" and wipe the file;
+        // after an external-change reload it would silently revert the file.
+        if (FilePath != null)
+            try { lastText = File.ReadAllText(FilePath); } catch { }
     }
 
     DateTime? ModificationDate()
     {
-        try { return File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath) : null; }
+        try { return FilePath != null && File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath) : null; }
         catch { return null; }
+    }
+
+    void StartWatching()
+    {
+        if (FilePath == null) return;   // nothing on disk to watch yet
+        watchTimer.Start();
     }
 
     // Live reload: poll the file's modification date once per second.
@@ -443,8 +301,8 @@ sealed class ViewerTab : TabPage
                 case "setWrap":
                     host.UpdateWrapState(body.TryGetProperty("wrap", out var w) && w.ValueKind == JsonValueKind.True);
                     break;
-                case "ai":
-                    HandleAI(body);
+                case "newFile":
+                    host.NewDocument();
                     break;
                 case "open":
                     host.ShowOpenDialog();
@@ -465,70 +323,10 @@ sealed class ViewerTab : TabPage
     void SetDirty(bool dirty)
     {
         IsDirty = dirty;
-        Text = (dirty ? "● " : "") + Path.GetFileName(FilePath);
+        Text = (dirty ? "● " : "") + DisplayName;
     }
 
-    /// Builds an AI prompt from a page request and sends the result back via `__aiResult`.
-    async void HandleAI(JsonElement body)
-    {
-        if (!body.TryGetProperty("id", out var idEl) || !body.TryGetProperty("mode", out var modeEl)) return;
-        var id = idEl.GetInt32();
-        var mode = modeEl.GetString();
-        string Str(string name) => body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : "";
-        var userPrompt = Str("prompt");
-        var selection = Str("selection");
-        var context = Str("context");
-
-        AIPrompt prompt;
-        switch (mode)
-        {
-            case "improve":
-                prompt = new AIPrompt
-                {
-                    System = "You are a markdown editing assistant. Revise the user's selected text per their instruction. Return ONLY the revised markdown — no preamble, no code fences, no commentary.",
-                    Messages = { new ChatMessage { Role = "user", Content = $"Instruction: {userPrompt}\n\nText to revise:\n{selection}" } }
-                };
-                break;
-            case "generate":
-                prompt = new AIPrompt
-                {
-                    System = "You write Markdown. Return ONLY the requested markdown content — no commentary, no surrounding code fences.",
-                    Messages = { new ChatMessage { Role = "user", Content = userPrompt } }
-                };
-                break;
-            case "chat":
-                var msgs = new List<ChatMessage>();
-                if (body.TryGetProperty("history", out var history) && history.ValueKind == JsonValueKind.Array)
-                    foreach (var h in history.EnumerateArray())
-                        if (h.TryGetProperty("role", out var r) && h.TryGetProperty("content", out var c))
-                            msgs.Add(new ChatMessage
-                            {
-                                Role = r.GetString() == "assistant" ? "assistant" : "user",
-                                Content = c.GetString() ?? ""
-                            });
-                msgs.Add(new ChatMessage { Role = "user", Content = userPrompt });
-                prompt = new AIPrompt
-                {
-                    System = "You are a helpful assistant answering questions about the user's markdown document. Be concise. The current document is:\n\n" + context,
-                    Messages = msgs
-                };
-                break;
-            default:
-                return;
-        }
-
-        try
-        {
-            var text = await AIService.Complete(prompt);
-            RunJS($"window.__aiResult && window.__aiResult({id}, {Renderer.JsString(text)})");
-        }
-        catch (Exception ex)
-        {
-            RunJS($"window.__aiError && window.__aiError({id}, {Renderer.JsString(ex.Message)})");
-        }
-    }
-
-    /// Runs arbitrary JS in the page (used by the AI/View menu items).
+    /// Runs arbitrary JS in the page.
     public void RunJS(string js)
     {
         try { web.CoreWebView2?.ExecuteScriptAsync(js); } catch { }
@@ -540,9 +338,55 @@ sealed class ViewerTab : TabPage
         try { web.Focus(); } catch { }
     }
 
-    /// Writes the latest editor text back to the markdown file on disk.
-    public void Save()
+    /// Saves the document: pulls the live editor text from the page, then writes
+    /// it. Falls back to the cached `lastText` when the page can't answer (e.g.
+    /// the error page is showing). Untitled documents run a save dialog first
+    /// (default name "Untitled.md"; the user may type any other extension).
+    /// Returns false when the save didn't happen (dialog cancelled/write failed).
+    public async Task<bool> SaveAsync()
     {
+        try
+        {
+            var r = await web.CoreWebView2.ExecuteScriptAsync("window.__getText ? window.__getText() : null");
+            if (!string.IsNullOrEmpty(r) && r != "null")
+                lastText = JsonSerializer.Deserialize<string>(r) ?? lastText;
+        }
+        catch { /* fall back to the cached copy */ }
+        if (FilePath == null) return SaveAs();
+        return WriteToDisk();
+    }
+
+    public async void Save() => await SaveAsync();
+
+    /// First save of an Untitled document: ask where to put it. Defaults to .md
+    /// but the "All files" filter lets the user keep any typed extension.
+    bool SaveAs()
+    {
+        using var dlg = new SaveFileDialog
+        {
+            FileName = "Untitled.md",
+            Filter = "Markdown (*.md)|*.md|All files (*.*)|*.*",
+            DefaultExt = "md",
+            AddExtension = true,
+            Title = "Save Markdown File",
+        };
+        if (dlg.ShowDialog(host) != DialogResult.OK) return false;
+        FilePath = Path.GetFullPath(dlg.FileName);
+        if (!WriteToDisk()) return false;
+        ToolTipText = FilePath;
+        host.UpdateTitle();
+        StartWatching();
+        // Re-render so <base href> points at the real folder (relative images
+        // now resolve) — editor content equals what was saved.
+        RenderAndLoad();
+        host.NoteRecent(FilePath);
+        return true;
+    }
+
+    /// Writes the latest editor text back to the markdown file on disk.
+    bool WriteToDisk()
+    {
+        if (FilePath == null) return false;
         try
         {
             File.WriteAllText(FilePath, lastText, new UTF8Encoding(false));
@@ -550,21 +394,25 @@ sealed class ViewerTab : TabPage
             lastModified = ModificationDate();
             SetDirty(false);
             RunJS("window.__onSaved && window.__onSaved()");
+            return true;
         }
         catch (Exception e)
         {
             MessageBox.Show($"{FilePath}\n\n{e.Message}", "Could not save the file.",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
         }
     }
 
-    /// Re-renders from disk (View ▸ Reload). Guards a dirty buffer first.
+    /// Re-renders from disk (View ▸ Reload From Disk). Guards a dirty buffer
+    /// first. No-op for Untitled documents — there is no disk copy to reload.
     public void ReloadFromDisk()
     {
+        if (FilePath == null) { System.Media.SystemSounds.Beep.Play(); return; }
         if (IsDirty)
         {
             var r = MessageBox.Show(
-                $"“{Path.GetFileName(FilePath)}” has unsaved changes. Reload from disk and discard them?",
+                $"“{DisplayName}” has unsaved changes. Reload from disk and discard them?",
                 "Reload", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (r != DialogResult.Yes) return;
             SetDirty(false);
@@ -600,11 +448,11 @@ sealed class MainForm : Form
     {
         Dock = DockStyle.Fill,
         TextAlign = ContentAlignment.MiddleCenter,
-        Text = "Open a Markdown file — Ctrl+O\n(or drag one onto this window)",
+        Text = "Open a Markdown file — Ctrl+O\nNew file — Ctrl+N\n(or drag one onto this window)",
         ForeColor = Color.Gray,
     };
     ToolStripMenuItem wrapMenuItem;
-    AISettingsForm aiSettings;
+    bool forceClose;
 
     public MainForm(string[] args)
     {
@@ -693,10 +541,10 @@ sealed class MainForm : Form
         emptyHint.Visible = tabs.TabCount == 0;
     }
 
-    void UpdateTitle()
+    public void UpdateTitle()
     {
         Text = tabs.SelectedTab is ViewerTab t
-            ? Path.GetFileName(t.FilePath) + " — MarkdownViewer"
+            ? t.DisplayName + " — MarkdownViewer"
             : "MarkdownViewer";
     }
 
@@ -705,11 +553,11 @@ sealed class MainForm : Form
 
     public async void OpenFile(string path) => await OpenFileAsync(path);
 
-    public async Task OpenFileAsync(string path)
+    public async Task OpenFileAsync(string path, bool noteAsRecent = true)
     {
         var full = Path.GetFullPath(path);
         foreach (ViewerTab t in tabs.TabPages)
-            if (string.Equals(t.FilePath, full, StringComparison.OrdinalIgnoreCase))
+            if (t.FilePath != null && string.Equals(t.FilePath, full, StringComparison.OrdinalIgnoreCase))
             {
                 tabs.SelectedTab = t;
                 return;
@@ -719,20 +567,75 @@ sealed class MainForm : Form
         tabs.SelectedTab = tab;
         UpdateEmptyState();
         UpdateTitle();
+        if (noteAsRecent) NoteRecent(full);
         await tab.Init();
     }
 
+    /// File ▸ New: a blank Untitled document opening in Split mode; the first
+    /// save asks for a location (default .md, any typed extension accepted).
+    public async void NewDocument()
+    {
+        var tab = new ViewerTab(this, null) { StartMode = "split" };
+        tabs.TabPages.Add(tab);
+        tabs.SelectedTab = tab;
+        UpdateEmptyState();
+        UpdateTitle();
+        await tab.Init();
+    }
+
+    // MARK: Recent files (persisted in settings.json, shown under File ▸ Open Recent)
+
+    const string RecentsKey = "recentFiles";
+    const int RecentsMax = 10;
+
+    List<string> RecentPaths()
+    {
+        try { return JsonSerializer.Deserialize<List<string>>(Settings.Get(RecentsKey) ?? "[]") ?? new List<string>(); }
+        catch { return new List<string>(); }
+    }
+
+    public void NoteRecent(string path)
+    {
+        var list = RecentPaths();
+        list.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+        list.Insert(0, path);
+        if (list.Count > RecentsMax) list = list.Take(RecentsMax).ToList();
+        Settings.Set(RecentsKey, JsonSerializer.Serialize(list));
+    }
+
+    /// Rebuilds File ▸ Open Recent every time it's about to show.
+    void RebuildRecentMenu(ToolStripMenuItem menu)
+    {
+        menu.DropDownItems.Clear();
+        var existing = RecentPaths().Where(File.Exists).ToList();
+        foreach (var path in existing)
+        {
+            var item = new ToolStripMenuItem(Path.GetFileName(path)) { ToolTipText = path };
+            var p = path;
+            item.Click += (_, __) => OpenFile(p);
+            menu.DropDownItems.Add(item);
+        }
+        if (existing.Count == 0)
+            menu.DropDownItems.Add(new ToolStripMenuItem("No Recent Files") { Enabled = false });
+        menu.DropDownItems.Add(new ToolStripSeparator());
+        var clear = new ToolStripMenuItem("Clear Menu") { Enabled = existing.Count > 0 };
+        clear.Click += (_, __) => Settings.Set(RecentsKey, "[]");
+        menu.DropDownItems.Add(clear);
+    }
+
     /// Warn before closing a tab that has unsaved edits. Returns true if closed.
-    public bool CloseTab(ViewerTab tab)
+    public async Task<bool> CloseTabAsync(ViewerTab tab)
     {
         if (tab == null) return false;
         if (tab.IsDirty)
         {
             var r = MessageBox.Show(
-                $"Do you want to save the changes you made to “{Path.GetFileName(tab.FilePath)}”?\n\nYour changes will be lost if you don't save them.",
+                $"Do you want to save the changes you made to “{tab.DisplayName}”?\n\nYour changes will be lost if you don't save them.",
                 "Unsaved Changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
             if (r == DialogResult.Cancel) return false;
-            if (r == DialogResult.Yes) tab.Save();
+            // A cancelled save dialog (Untitled) or failed write keeps the tab
+            // open — closing anyway would throw the document away.
+            if (r == DialogResult.Yes && !await tab.SaveAsync()) return false;
         }
         tab.Stop();
         tabs.TabPages.Remove(tab);
@@ -742,21 +645,38 @@ sealed class MainForm : Form
         return true;
     }
 
+    public async void CloseTab(ViewerTab tab) => await CloseTabAsync(tab);
+
     void OnFormClosing(object sender, FormClosingEventArgs e)
     {
-        foreach (var tab in tabs.TabPages.Cast<ViewerTab>().ToArray())
+        if (!forceClose)
         {
-            if (tab.IsDirty)
+            var dirty = tabs.TabPages.Cast<ViewerTab>().Where(t => t.IsDirty).ToArray();
+            if (dirty.Length > 0)
             {
-                tabs.SelectedTab = tab;
-                var r = MessageBox.Show(
-                    $"Do you want to save the changes you made to “{Path.GetFileName(tab.FilePath)}”?\n\nYour changes will be lost if you don't save them.",
-                    "Unsaved Changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-                if (r == DialogResult.Cancel) { e.Cancel = true; return; }
-                if (r == DialogResult.Yes) tab.Save();
+                // Saves are async (they pull the live text from the page), so
+                // cancel this close and re-close once they're all settled.
+                e.Cancel = true;
+                FinishClose(dirty);
+                return;
             }
-            tab.Stop();
         }
+        foreach (ViewerTab t in tabs.TabPages) t.Stop();
+    }
+
+    async void FinishClose(ViewerTab[] dirty)
+    {
+        foreach (var tab in dirty)
+        {
+            tabs.SelectedTab = tab;
+            var r = MessageBox.Show(
+                $"Do you want to save the changes you made to “{tab.DisplayName}”?\n\nYour changes will be lost if you don't save them.",
+                "Unsaved Changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+            if (r == DialogResult.Cancel) return;
+            if (r == DialogResult.Yes && !await tab.SaveAsync()) return;
+        }
+        forceClose = true;
+        Close();
     }
 
     /// Called from the page (via the `setWrap` bridge action) to keep the menu checkmark synced.
@@ -842,7 +762,7 @@ sealed class MainForm : Form
         var dst = Path.Combine(tmpDir, name);
         try { File.Copy(src, dst, true); }
         catch { System.Media.SystemSounds.Beep.Play(); return; }
-        OpenFile(dst);
+        _ = OpenFileAsync(dst, noteAsRecent: false);
     }
 
     // MARK: Menu
@@ -853,8 +773,14 @@ sealed class MainForm : Form
 
         // File
         var file = new ToolStripMenuItem("&File");
+        file.DropDownItems.Add(Item("New", Keys.Control | Keys.N, (_, __) => NewDocument()));
         file.DropDownItems.Add(Item("Open…", Keys.Control | Keys.O, (_, __) => ShowOpenDialog()));
         file.DropDownItems.Add(Item("Open Path…", Keys.Control | Keys.Shift | Keys.G, (_, __) => ShowOpenPathDialog()));
+        var openRecent = new ToolStripMenuItem("Open Recent");
+        openRecent.DropDownOpening += (_, __) => RebuildRecentMenu(openRecent);
+        RebuildRecentMenu(openRecent);   // seed so the submenu arrow shows
+        file.DropDownItems.Add(openRecent);
+        file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(Item("Save", Keys.Control | Keys.S, (_, __) => Current?.Save()));
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(Item("Close Tab", Keys.Control | Keys.W, (_, __) => CloseTab(Current)));
@@ -875,25 +801,13 @@ sealed class MainForm : Form
         wrapMenuItem.Checked = true;
         view.DropDownItems.Add(wrapMenuItem);
         view.DropDownItems.Add(new ToolStripSeparator());
-        view.DropDownItems.Add(Item("Reload", Keys.Control | Keys.R, (_, __) => Current?.ReloadFromDisk()));
-
-        // AI
-        var ai = new ToolStripMenuItem("&AI");
-        ai.DropDownItems.Add(Item("Improve Selection", Keys.None, (_, __) => Current?.RunJS("window.__aiImprove && window.__aiImprove()")));
-        ai.DropDownItems.Add(Item("Generate && Insert…", Keys.None, (_, __) => Current?.RunJS("window.__aiGenerate && window.__aiGenerate()")));
-        ai.DropDownItems.Add(Item("Chat", Keys.None, (_, __) => Current?.RunJS("window.__toggleChat && window.__toggleChat()")));
-        ai.DropDownItems.Add(new ToolStripSeparator());
-        ai.DropDownItems.Add(Item("Settings…", Keys.None, (_, __) =>
-        {
-            aiSettings ??= new AISettingsForm();
-            aiSettings.ShowFront(this);
-        }));
+        view.DropDownItems.Add(Item("Reload From Disk", Keys.Control | Keys.R, (_, __) => Current?.ReloadFromDisk()));
 
         // Help
         var help = new ToolStripMenuItem("&Help");
         help.DropDownItems.Add(Item("About MarkdownViewer", Keys.None, (_, __) => ShowAbout()));
 
-        menu.Items.AddRange(new ToolStripItem[] { file, edit, view, ai, help });
+        menu.Items.AddRange(new ToolStripItem[] { file, edit, view, help });
         MainMenuStrip = menu;
         return menu;
     }
@@ -903,109 +817,6 @@ sealed class MainForm : Form
         var item = new ToolStripMenuItem(text, null, onClick);
         if (keys != Keys.None) item.ShortcutKeys = keys;
         return item;
-    }
-}
-
-// MARK: - AI Settings window
-
-/// Lets the user choose the active AI provider, edit its base URL + model, and store its
-/// API key encrypted with DPAPI. The key is entered in a password field and never echoed.
-sealed class AISettingsForm : Form
-{
-    readonly ComboBox popup = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
-    readonly TextBox baseField = new TextBox();
-    readonly TextBox modelField = new TextBox();
-    readonly TextBox keyField = new TextBox { UseSystemPasswordChar = true };
-    readonly Label keyStatus = new Label { AutoSize = true, ForeColor = Color.Gray };
-
-    public AISettingsForm()
-    {
-        Text = "AI Settings";
-        FormBorderStyle = FormBorderStyle.FixedDialog;
-        MinimizeBox = false; MaximizeBox = false;
-        StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(540, 300);
-
-        // Closing hides so stored state (selection) survives, like the Mac panel.
-        FormClosing += (_, e) => { e.Cancel = true; Hide(); };
-
-        int labelX = 16, fieldX = 104, fieldW = 416, y = 20, rowH = 34;
-        Label MkLabel(string s) => new Label { Text = s, Location = new Point(labelX, y + 4), Width = 84, TextAlign = ContentAlignment.MiddleRight };
-        void Row(string title, Control field)
-        {
-            Controls.Add(MkLabel(title));
-            field.Location = new Point(fieldX, y);
-            field.Width = fieldW;
-            Controls.Add(field);
-            y += rowH;
-        }
-
-        popup.Items.AddRange(Providers.All.Select(p => (object)p.Name).ToArray());
-        popup.SelectedIndexChanged += (_, __) => LoadSelected();
-
-        Row("Provider:", popup);
-        Row("Base URL:", baseField);
-        Row("Model:", modelField);
-        Row("API Key:", keyField);
-        keyField.PlaceholderText = "Paste API key (stored encrypted per user)";
-
-        keyStatus.Location = new Point(fieldX, y); y += 26;
-        Controls.Add(keyStatus);
-
-        var note = new Label
-        {
-            Text = "Keys are stored per-provider, encrypted with Windows DPAPI for your user account, and aren't shown again. "
-                 + "Base URL and model are editable so you can target the exact endpoint and model your account allows.",
-            Location = new Point(fieldX, y),
-            Size = new Size(fieldW, 48),
-            ForeColor = Color.Gray,
-        };
-        Controls.Add(note);
-        y += 56;
-
-        var saveBtn = new Button { Text = "Save", Location = new Point(fieldX + fieldW - 85, y), Width = 85 };
-        saveBtn.Click += (_, __) => SaveClicked();
-        AcceptButton = saveBtn;
-        Controls.Add(saveBtn);
-
-        // Select the active provider and load its fields.
-        var active = AIService.ActiveProvider();
-        popup.SelectedIndex = Math.Max(0, Array.FindIndex(Providers.All, p => p.Id == active.Id));
-        LoadSelected();
-    }
-
-    public void ShowFront(Form owner)
-    {
-        if (!Visible) Show(owner);
-        Activate();
-    }
-
-    AIProvider Selected => Providers.All[Math.Max(0, popup.SelectedIndex)];
-
-    void LoadSelected()
-    {
-        var p = Selected;
-        baseField.Text = AIService.BaseUrl(p);
-        modelField.Text = AIService.Model(p);
-        keyField.Text = "";
-        keyStatus.Text = !string.IsNullOrEmpty(SecretStore.Get(p.Id))
-            ? $"✓ A key is stored for {p.Name}." : $"No key stored for {p.Name}.";
-    }
-
-    void SaveClicked()
-    {
-        var p = Selected;
-        AIService.SetActive(p.Id);
-        AIService.SetBaseUrl(baseField.Text.Trim(), p.Id);
-        AIService.SetModel(modelField.Text.Trim(), p.Id);
-        var key = keyField.Text.Trim();
-        if (key.Length > 0)
-        {
-            SecretStore.Set(key, p.Id);
-            keyField.Text = "";
-        }
-        keyStatus.Text = "Saved. " + (!string.IsNullOrEmpty(SecretStore.Get(p.Id))
-            ? $"✓ Key stored for {p.Name}." : $"No key stored for {p.Name}.");
     }
 }
 
@@ -1052,12 +863,14 @@ sealed class AboutForm : Form
             Location = new Point(0, 168), Size = new Size(380, 20),
         };
 
-        var changelog = new Button { Text = "Changelog", Location = new Point(66, 216), Width = 110 };
+        var changelog = new Button { Text = "Changelog", Location = new Point(22, 216), Width = 105 };
         changelog.Click += (_, __) => { host.OpenBundledDoc("CHANGELOG.md"); Close(); };
-        var arch = new Button { Text = "Architecture / Design", Location = new Point(186, 216), Width = 130 };
+        var arch = new Button { Text = "Architecture", Location = new Point(137, 216), Width = 105 };
         arch.Click += (_, __) => { host.OpenBundledDoc("ARCHITECTURE.md"); Close(); };
+        var design = new Button { Text = "Design", Location = new Point(252, 216), Width = 105 };
+        design.Click += (_, __) => { host.OpenBundledDoc("DESIGN.md"); Close(); };
 
-        Controls.AddRange(new Control[] { icon, name, ver, author, changelog, arch });
+        Controls.AddRange(new Control[] { icon, name, ver, author, changelog, arch, design });
     }
 }
 

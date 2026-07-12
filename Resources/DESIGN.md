@@ -139,9 +139,17 @@ git history before the v1.2 commit.
 ## Platform support
 
 - **macOS 11+, universal binary** (arm64 + x86_64) — `build.sh` compiles both
-  slices and merges them with `lipo`.
-- **Windows is not supported and can't be** with this codebase: the shell is
-  AppKit + WKWebView. If a Windows/Linux version is ever wanted, the entire
-  in-page UI (`template.html`) ports nearly as-is; only the ~1000-line native
-  shell would need rewriting — Tauri (system WebView, small binaries) would be
-  the closest match to the current design.
+  slices and merges them with `lipo`. Shell: Swift + AppKit + WKWebView
+  (`Sources/main.swift`).
+- **Windows 10+** — a native port in `windows/`: C# + WinForms + WebView2
+  (`Program.cs`), tabs in one window, single-instance via a named pipe.
+  It shares the rendering assets and implements the same design described in
+  this document (same bridge actions, same save/dirty invariants, same
+  security model).
+- **Keeping the two in sync**: `windows/Resources/template.html` is
+  *regenerated* from the Mac `Resources/template.html` plus a small fixed
+  delta (message bridge chrome.webview-first, Windows font stacks, Ctrl
+  shortcut labels, an in-page app-shortcut block, and a `window.__escape`
+  hook). Never hand-edit only one template — change the Mac one, re-apply the
+  delta. Behavior changes in `main.swift` must be mirrored in
+  `windows/Program.cs` and vice versa.

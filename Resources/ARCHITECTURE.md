@@ -9,8 +9,8 @@ compiles with `swiftc` (universal: arm64 + x86_64, macOS 11+) and assembles the
 
 ```
 MarkdownViewer/
-├─ Sources/main.swift        # the whole native app (AppKit + WebKit)
-├─ CHANGELOG.md              # canonical changelog (copied into the bundle)
+├─ Sources/main.swift        # the whole native macOS app (AppKit + WebKit)
+├─ CHANGELOG.md              # canonical changelog (copied into both bundles)
 ├─ Resources/
 │  ├─ template.html          # render shell + all in-page UI and logic (incl. CSP)
 │  ├─ marked.min.js          # markdown → HTML (MIT)
@@ -19,6 +19,10 @@ MarkdownViewer/
 │  ├─ hljs-github-*.css      # highlight.js themes
 │  ├─ ARCHITECTURE.md        # this file, shown by the About window
 │  └─ DESIGN.md              # behavioral design doc, shown by the About window
+├─ windows/                  # native Windows port (C# + WinForms + WebView2)
+│  ├─ Program.cs             # the whole Windows app — mirrors main.swift
+│  └─ Resources/template.html# regenerated from ../Resources/template.html
+│                            # (bridge + fonts + Ctrl labels delta; see DESIGN.md)
 └─ build.sh                  # fetch assets, compile both arches, lipo, bundle, sign
 ```
 

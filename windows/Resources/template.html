@@ -2,6 +2,11 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- CSP: documents can contain raw HTML, so without this a malicious .md could
+     load a remote script that talks to the native bridge (including "save").
+     Scripts/styles: bundled file:// assets + our inline code only. Images may
+     be local or remote; nothing on the page may open network connections. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file: 'unsafe-inline'; style-src file: 'unsafe-inline'; img-src file: data: https: http:; media-src file: data:; font-src file: data:; connect-src 'none'">
 <base href="__BASE__">
 <title>__TITLE__</title>
 
@@ -32,11 +37,11 @@
 <style>
   :root[data-theme="light"] {
     --bg: #ffffff; --surface: #f6f8fa; --text: #1f2328; --muted: #59636e;
-    --border: #d1d9e0; --accent: #0969da;
+    --border: #d1d9e0; --accent: #0969da; --success: #1a7f37;
   }
   :root[data-theme="dark"] {
     --bg: #0d1117; --surface: #161b22; --text: #e6edf3; --muted: #9198a1;
-    --border: #30363d; --accent: #4493f8;
+    --border: #30363d; --accent: #4493f8; --success: #3fb950;
   }
   html, body {
     height: 100%; margin: 0; padding: 0; overflow: hidden;
@@ -79,12 +84,8 @@
   }
   body[data-dirty="true"] .dirty-dot { display: inline-block; }
 
-  /* ---- Stage: holds the editor/preview workspace and the docked chat panel.
-     Direction changes with the chat dock side so content is squeezed, not covered. ---- */
+  /* ---- Stage: holds the editor/preview workspace ---- */
   .stage { flex: 1 1 auto; display: flex; min-height: 0; min-width: 0; }
-  body[data-chat-side="right"]  .stage { flex-direction: row; }
-  body[data-chat-side="left"]   .stage { flex-direction: row-reverse; }
-  body[data-chat-side="bottom"] .stage { flex-direction: column; }
 
   /* ---- Workspace (editor / preview panes) ---- */
   .workspace { flex: 1 1 auto; display: grid; min-height: 0; min-width: 0; position: relative; }
@@ -130,7 +131,8 @@
   .editor { white-space: pre-wrap; }
   body[data-wrap="off"] .editor { white-space: pre; }
 
-  /* Always-visible, themed scrollbars on the panes. */
+  /* Always-visible, themed scrollbars on the panes (macOS hides overlay ones,
+     so horizontal + vertical bars stay visible when the window is small). */
   .editor::-webkit-scrollbar, .preview::-webkit-scrollbar { width: 13px; height: 13px; }
   .editor::-webkit-scrollbar-track, .preview::-webkit-scrollbar-track { background: var(--surface); }
   .editor::-webkit-scrollbar-thumb, .preview::-webkit-scrollbar-thumb {
@@ -169,41 +171,6 @@
   /* Replace controls show only in find-and-replace mode. */
   .findbar:not(.replace-mode) .replace-only { display: none; }
 
-  /* ---- AI chat panel: a docked flex item that squeezes the workspace (never overlays) ---- */
-  .chat {
-    flex: 0 0 360px; min-width: 0; min-height: 0;
-    display: none; flex-direction: column;
-    background: var(--surface); border-left: 1px solid var(--border);
-  }
-  body[data-chat="on"] .chat { display: flex; }
-  /* Border sits on whichever edge faces the content. */
-  body[data-chat-side="left"]   .chat { border-left: none; border-right: 1px solid var(--border); }
-  body[data-chat-side="bottom"] .chat { flex-basis: 40%; border-left: none; border-top: 1px solid var(--border); }
-  .chat-head {
-    flex: none; display: flex; align-items: center; justify-content: space-between;
-    padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 600; font-size: 13px;
-  }
-  .chat-head-btns { display: inline-flex; gap: 4px; }
-  .chat-head button {
-    appearance: none; border: none; background: transparent; color: var(--muted);
-    font: inherit; font-size: 15px; cursor: pointer; padding: 0 4px; border-radius: 5px;
-  }
-  .chat-head button:hover { background: var(--bg); color: var(--text); }
-  .chat-msgs { flex: 1 1 auto; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-  .msg { padding: 8px 11px; border-radius: 10px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; max-width: 92%; }
-  .msg-user { align-self: flex-end; background: var(--accent); color: #fff; }
-  .msg-assistant { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); color: var(--text); }
-  .chat-input { flex: none; display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); }
-  .chat-input textarea {
-    flex: 1 1 auto; resize: none; font: inherit; font-size: 13px; padding: 6px 8px;
-    border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); outline: none;
-  }
-  .chat-input textarea:focus { border-color: var(--accent); }
-  .chat-input button {
-    appearance: none; font: inherit; font-size: 13px; cursor: pointer; padding: 0 14px;
-    border: 1px solid var(--accent); border-radius: 8px; background: var(--accent); color: #fff;
-  }
-
   /* Theme switcher: a circular button; clicking cycles Light → Dark → System. */
   .theme-switch { position: relative; }
   .theme-btn {
@@ -219,7 +186,7 @@
   :root[data-theme-choice="dark"]   .theme-btn .ico-dark   { display: block; }
   :root[data-theme-choice="system"] .theme-btn .ico-system { display: block; }
 
-  /* ---- Copy button on fenced code blocks (appears on hover) ---- */
+  /* ---- Copy button on fenced code blocks (always visible; brightens on hover) ---- */
   .markdown-body pre { position: relative; }
   .copy-btn {
     position: absolute; top: 8px; right: 8px;
@@ -227,12 +194,12 @@
     font-family: "Segoe UI", -apple-system, Arial, sans-serif;
     font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 7px;
     border: 1px solid var(--border); background: var(--surface); color: var(--muted);
-    cursor: pointer; opacity: 0;
+    cursor: pointer; opacity: .7;
     transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
   }
-  .markdown-body pre:hover .copy-btn, .copy-btn:focus-visible { opacity: 1; }
+  .markdown-body pre:hover .copy-btn, .copy-btn:hover, .copy-btn:focus-visible { opacity: 1; }
   .copy-btn:hover { color: var(--text); border-color: var(--accent); }
-  .copy-btn.copied { color: #1a7f37; border-color: #1a7f37; }
+  .copy-btn.copied { color: var(--success); border-color: var(--success); }
   .copy-btn svg { width: 13px; height: 13px; display: block; }
   .copy-btn .ico-check { display: none; }
   .copy-btn.copied .ico-copy { display: none; }
@@ -244,7 +211,7 @@
   .editor { font-size: calc(13.5px * var(--zoom)); }
 </style>
 </head>
-<body data-mode="preview" data-dirty="false" data-chat-side="right">
+<body data-mode="preview" data-dirty="false">
 
 <div class="toolbar">
   <div class="segmented" role="tablist" aria-label="View mode">
@@ -259,8 +226,6 @@
     <span class="dirty-dot" aria-hidden="true"></span>
     <span>Save</span>
   </button>
-
-  <button class="save-btn" id="aiBtn" title="AI Chat">AI</button>
 
   <div class="theme-switch">
     <button class="theme-btn" id="themeBtn" aria-label="Theme" title="Theme">
@@ -293,20 +258,6 @@
     </div>
   </div>
 
-  <div class="chat" id="chatPanel">
-    <div class="chat-head">
-      <span>AI Chat</span>
-      <span class="chat-head-btns">
-        <button id="chatMove" title="Move panel (right · left · bottom)" aria-label="Move panel">⇆</button>
-        <button id="chatClose" title="Close" aria-label="Close chat">✕</button>
-      </span>
-    </div>
-    <div class="chat-msgs" id="chatMsgs"></div>
-    <div class="chat-input">
-      <textarea id="chatText" rows="2" placeholder="Ask about this document…  (Ctrl+Enter to send)"></textarea>
-      <button id="chatSend">Send</button>
-    </div>
-  </div>
 </div>
 
 <script src="__RES__/marked.min.js"></script>
@@ -343,6 +294,7 @@ const MD = __MARKDOWN__;
     if (window.marked) {
       marked.setOptions({ gfm: true, breaks: false });
       content.innerHTML = marked.parse(text);
+      sanitize(content);
     } else {
       content.textContent = text;
     }
@@ -351,8 +303,52 @@ const MD = __MARKDOWN__;
         try { hljs.highlightElement(b); } catch (e) {}
       });
     }
+    addHeadingIds(content);
     addCopyButtons(content);
   }
+
+  // ---- Sanitize rendered HTML ----
+  // Markdown may contain raw HTML. innerHTML already neutralizes <script>
+  // tags (the parser never executes them), so the live XSS vectors are inline
+  // event handlers (onerror=, onclick=, …) and javascript: URLs — strip both.
+  // The CSP in <head> backstops everything else (remote scripts, fetch/XHR).
+  function sanitize(root) {
+    root.querySelectorAll('*').forEach(function (el) {
+      for (var i = el.attributes.length - 1; i >= 0; i--) {
+        var name = el.attributes[i].name;
+        if (name.slice(0, 2).toLowerCase() === 'on') { el.removeAttribute(name); continue; }
+        if (name === 'href' || name === 'src' || name === 'xlink:href') {
+          var v = (el.attributes[i].value || '').replace(/[\s\u0000-\u001f]+/g, '').toLowerCase();
+          if (v.indexOf('javascript:') === 0 || v.indexOf('vbscript:') === 0) el.removeAttribute(name);
+        }
+      }
+    });
+  }
+
+  // ---- In-document anchor links ----
+  // marked v12 emits no heading ids, and the <base href> (needed for relative
+  // images) makes "#x" resolve against the file's directory and navigate away.
+  // So: generate GitHub-style ids ourselves and handle fragment clicks in-page.
+  function addHeadingIds(root) {
+    var used = {};
+    root.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(function (h) {
+      var slug = h.textContent.toLowerCase().trim()
+        .replace(/[^\w\- ]+/g, '')
+        .replace(/\s+/g, '-') || 'section';
+      if (used.hasOwnProperty(slug)) { used[slug]++; slug = slug + '-' + used[slug]; }
+      else { used[slug] = 0; }
+      h.id = slug;
+    });
+  }
+  content.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a') : null;
+    if (!a || !content.contains(a)) return;
+    var href = a.getAttribute('href') || '';
+    if (href.charAt(0) !== '#') return;
+    e.preventDefault();
+    var el = document.getElementById(decodeURIComponent(href.slice(1)));
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 
   // ---- Copy button on each code block (copies everything between ``` and ```) ----
   var COPY_ICON = '<svg class="ico-copy" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.5a1.5 1.5 0 0 0-1.5-1.5H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"/></svg>';
@@ -419,6 +415,35 @@ const MD = __MARKDOWN__;
   }
   // Called by the native side after a successful disk write.
   window.__onSaved = function () { setDirty(false); };
+  // Called by the native side right before a disk write so menu/close saves
+  // always get the live editor text, never a stale/empty cached copy.
+  window.__getText = function () { return editor.value; };
+
+  // ---- Programmatic edits ----
+  // Replace [start, end) in the editor with `text` WITHOUT destroying the
+  // native undo stack — assigning editor.value wipes it, execCommand is the
+  // only undo-preserving programmatic edit for a textarea in WebKit. Used by
+  // Tab-inserts-spaces, Find & Replace, and the AI insert/improve actions.
+  // execCommand acts on the focused element, so focus hops to the editor and
+  // back (Replace runs while focus is in the find bar).
+  function spliceEditor(start, end, text) {
+    if (start === end && !text) return;
+    var prevFocus = document.activeElement;
+    if (prevFocus !== editor) editor.focus();
+    editor.setSelectionRange(start, end);
+    var ok = false;
+    try {
+      ok = text ? document.execCommand('insertText', false, text)
+                : document.execCommand('delete', false, null);
+    } catch (e) {}
+    if (!ok) {
+      // Fallback: direct splice (loses undo, but never loses the edit).
+      editor.value = editor.value.slice(0, start) + text + editor.value.slice(end);
+      editor.setSelectionRange(start + text.length, start + text.length);
+      editor.dispatchEvent(new Event('input'));   // execCommand fires this natively
+    }
+    if (prevFocus && prevFocus !== editor && prevFocus.focus) prevFocus.focus();
+  }
 
   // ---- Editing ----
   var renderTimer = null, changeTimer = null;
@@ -434,10 +459,7 @@ const MD = __MARKDOWN__;
   editor.addEventListener('keydown', function (e) {
     if (e.key === 'Tab') {
       e.preventDefault();
-      var s = editor.selectionStart, en = editor.selectionEnd;
-      editor.value = editor.value.slice(0, s) + '  ' + editor.value.slice(en);
-      editor.selectionStart = editor.selectionEnd = s + 2;
-      editor.dispatchEvent(new Event('input'));
+      spliceEditor(editor.selectionStart, editor.selectionEnd, '  ');
     }
   });
 
@@ -475,6 +497,7 @@ const MD = __MARKDOWN__;
     if (k === '1') { e.preventDefault(); setMode('preview'); }
     else if (k === '2') { e.preventDefault(); setMode('edit'); }
     else if (k === '3') { e.preventDefault(); setMode('split'); }
+    else if (k === 'n' && !e.shiftKey) { e.preventDefault(); bridge({ action: 'newFile' }); }
     else if (k === 'o' && !e.shiftKey) { e.preventDefault(); bridge({ action: 'open' }); }
     else if (k === 'g' && e.shiftKey) { e.preventDefault(); bridge({ action: 'openPath' }); }
     else if (k === 'w') { e.preventDefault(); bridge({ action: 'closeTab' }); }
@@ -484,18 +507,34 @@ const MD = __MARKDOWN__;
   });
 
   // ---- Synced scrolling (Split mode) + preview scroll persistence ----
-  var isSyncing = false;
+  //
+  // Only the pane the user is actually driving propagates its scroll. A
+  // time-based guard does NOT work here: writing dst.scrollTop fires dst's
+  // scroll event asynchronously, often after a requestAnimationFrame guard has
+  // already cleared, so the echo syncs back with sub-pixel rounding error and
+  // the two panes ratchet each other along on their own. Tracking the driver
+  // pane by real input events (wheel / drag / keys / focus) removes the loop
+  // entirely, and the 1px threshold stops fractional churn.
+  var driver = null;
+  function claim(pane) { return function () { driver = pane; }; }
+  ['wheel', 'mousedown', 'touchstart', 'keydown', 'focusin'].forEach(function (evt) {
+    editor.addEventListener(evt, claim(editor), { passive: true });
+    preview.addEventListener(evt, claim(preview), { passive: true });
+  });
+
   function syncScroll(src, dst) {
-    if (isSyncing) return;
     if (body.getAttribute('data-mode') !== 'split') return;
-    isSyncing = true;
+    if (driver && driver !== src) return;   // this is an echo from the passive pane — ignore
     var srcVMax = src.scrollHeight - src.clientHeight;
     var dstVMax = dst.scrollHeight - dst.clientHeight;
-    dst.scrollTop = srcVMax > 0 ? (src.scrollTop / srcVMax) * dstVMax : 0;
+    var top = srcVMax > 0 ? (src.scrollTop / srcVMax) * dstVMax : 0;
+    if (Math.abs(dst.scrollTop - top) > 1) dst.scrollTop = top;
     var srcHMax = src.scrollWidth - src.clientWidth;
     var dstHMax = dst.scrollWidth - dst.clientWidth;
-    if (srcHMax > 0) dst.scrollLeft = (src.scrollLeft / srcHMax) * dstHMax;
-    requestAnimationFrame(function () { isSyncing = false; });
+    if (srcHMax > 0) {
+      var left = (src.scrollLeft / srcHMax) * dstHMax;
+      if (Math.abs(dst.scrollLeft - left) > 1) dst.scrollLeft = left;
+    }
   }
   editor.addEventListener('scroll', function () {
     syncScroll(editor, preview);
@@ -567,12 +606,17 @@ const MD = __MARKDOWN__;
     var caseSensitive = false;
 
     function findAll(hay, needle) {
+      // Regex on the ORIGINAL string: lowercasing the haystack for comparison
+      // shifts offsets for characters whose lowercase form changes length
+      // (e.g. Turkish İ), which would corrupt Replace.
       var res = [];
       if (!needle) return res;
-      var h = caseSensitive ? hay : hay.toLowerCase();
-      var n = caseSensitive ? needle : needle.toLowerCase();
-      var i = h.indexOf(n);
-      while (i !== -1) { res.push(i); i = h.indexOf(n, i + n.length); }
+      var re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+      var m;
+      while ((m = re.exec(hay)) !== null) {
+        res.push(m.index);
+        if (re.lastIndex === m.index) re.lastIndex++;
+      }
       return res;
     }
     function refreshCount() {
@@ -610,8 +654,7 @@ const MD = __MARKDOWN__;
     function replaceCurrent() {
       if (current < 0 || !matches.length) return;
       var start = matches[current], end = start + findInput.value.length;
-      editor.value = editor.value.slice(0, start) + replaceInput.value + editor.value.slice(end);
-      editor.dispatchEvent(new Event('input'));   // updates preview + dirty state
+      spliceEditor(start, end, replaceInput.value);   // undo-preserving; fires input
       recompute(false);
       // Move selection to the next match at/after the edit point.
       if (matches.length) {
@@ -630,8 +673,7 @@ const MD = __MARKDOWN__;
         last = occ[k] + term.length;
       }
       out += editor.value.slice(last);
-      editor.value = out;
-      editor.dispatchEvent(new Event('input'));
+      spliceEditor(0, editor.value.length, out);   // one whole-document splice = one undo step
       recompute(false);
     }
 
@@ -649,12 +691,12 @@ const MD = __MARKDOWN__;
       selectCurrent();
     }
     function close() { bar.hidden = true; editor.focus(); }
-
-    window.__find = function () { open(false); };
-    window.__findReplace = function () { open(true); };
     // Escape is a WinForms dialog key: the WebView host receives it instead of
     // the page, so the native side calls this hook to close the find bar.
     window.__escape = function () { if (!bar.hidden) close(); };
+
+    window.__find = function () { open(false); };
+    window.__findReplace = function () { open(true); };
 
     findInput.addEventListener('input', function () { recompute(false); selectCurrent(); });
     findInput.addEventListener('keydown', function (e) {
@@ -683,104 +725,6 @@ const MD = __MARKDOWN__;
         open(e.altKey);
       }
     });
-  })();
-
-  // ---- AI assistant (improve selection / chat / generate) ----
-  (function ai() {
-    var counter = 0, pending = {};
-    function request(mode, payload) {
-      return new Promise(function (resolve, reject) {
-        var id = ++counter;
-        pending[id] = { resolve: resolve, reject: reject };
-        var msg = { action: 'ai', id: id, mode: mode };
-        for (var k in payload) msg[k] = payload[k];
-        bridge(msg);
-      });
-    }
-    window.__aiResult = function (id, text) {
-      var p = pending[id]; if (p) { delete pending[id]; p.resolve(text); }
-    };
-    window.__aiError = function (id, msg) {
-      var p = pending[id]; if (p) { delete pending[id]; p.reject(new Error(msg)); }
-    };
-
-    // Improve the current editor selection in place.
-    window.__aiImprove = function () {
-      if (body.getAttribute('data-mode') === 'preview') setMode('edit');
-      var s = editor.selectionStart, e = editor.selectionEnd;
-      var sel = editor.value.substring(s, e);
-      if (!sel) { alert('Select some text in the editor first.'); return; }
-      var instr = prompt('How should I revise the selection?', 'Improve clarity and fix grammar');
-      if (instr === null) return;
-      request('improve', { selection: sel, prompt: instr }).then(function (text) {
-        editor.value = editor.value.slice(0, s) + text + editor.value.slice(e);
-        editor.setSelectionRange(s, s + text.length);
-        editor.dispatchEvent(new Event('input'));
-      }).catch(function (err) { alert('AI error: ' + err.message); });
-    };
-
-    // Generate markdown from a prompt and insert at the cursor.
-    window.__aiGenerate = function () {
-      if (body.getAttribute('data-mode') === 'preview') setMode('edit');
-      var instr = prompt('Describe the markdown to generate and insert:', '');
-      if (!instr) return;
-      var pos = editor.selectionStart;
-      request('generate', { prompt: instr }).then(function (text) {
-        editor.value = editor.value.slice(0, pos) + text + editor.value.slice(pos);
-        editor.setSelectionRange(pos, pos + text.length);
-        editor.dispatchEvent(new Event('input'));
-      }).catch(function (err) { alert('AI error: ' + err.message); });
-    };
-
-    // Chat panel about the document.
-    var chatMsgs = document.getElementById('chatMsgs');
-    var chatText = document.getElementById('chatText');
-    var history = [];
-    function addMsg(role, text) {
-      var d = document.createElement('div');
-      d.className = 'msg msg-' + role;
-      d.textContent = text;
-      chatMsgs.appendChild(d);
-      chatMsgs.scrollTop = chatMsgs.scrollHeight;
-      return d;
-    }
-    function sendChat() {
-      var t = chatText.value.trim();
-      if (!t) return;
-      chatText.value = '';
-      addMsg('user', t);
-      var thinking = addMsg('assistant', '…');
-      var priorHistory = history.slice();
-      history.push({ role: 'user', content: t });
-      request('chat', { prompt: t, context: editor.value, history: priorHistory }).then(function (text) {
-        thinking.textContent = text;
-        history.push({ role: 'assistant', content: text });
-      }).catch(function (err) { thinking.textContent = '⚠️ ' + err.message; });
-    }
-    window.__toggleChat = function () {
-      var on = body.getAttribute('data-chat') === 'on';
-      body.setAttribute('data-chat', on ? 'off' : 'on');
-      if (!on) chatText.focus();
-    };
-    document.getElementById('aiBtn').addEventListener('click', window.__toggleChat);
-    document.getElementById('chatClose').addEventListener('click', function () { body.setAttribute('data-chat', 'off'); });
-    document.getElementById('chatSend').addEventListener('click', sendChat);
-    chatText.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendChat(); }
-    });
-
-    // Dock the panel right → left → bottom; persisted across sessions.
-    var SIDES = ['right', 'left', 'bottom'];
-    function setChatSide(side) {
-      if (SIDES.indexOf(side) === -1) side = 'right';
-      body.setAttribute('data-chat-side', side);
-      try { localStorage.setItem('chatSide', side); } catch (e) {}
-    }
-    document.getElementById('chatMove').addEventListener('click', function () {
-      var cur = body.getAttribute('data-chat-side') || 'right';
-      setChatSide(SIDES[(SIDES.indexOf(cur) + 1) % SIDES.length]);
-    });
-    try { setChatSide(localStorage.getItem('chatSide') || 'right'); } catch (e) {}
   })();
 
   // ---- Theme system (circular toggle: click cycles Light → Dark → System) ----
