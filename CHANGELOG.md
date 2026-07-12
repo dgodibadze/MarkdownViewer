@@ -5,6 +5,15 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.3] — 2026-07-12
+
+### Fixed
+
+- **Crash on a malformed AI Base URL.** The request builder force-unwrapped
+  `URL(string:)` on user-editable Settings input, so a base URL with a space (or
+  other invalid characters) crashed the app on the next AI request. It now throws
+  a descriptive "endpoint URL is invalid" error that surfaces as an alert.
+
 ## [1.2] — 2026-07-12
 
 ### Fixed

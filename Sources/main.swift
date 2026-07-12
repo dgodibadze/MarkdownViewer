@@ -33,12 +33,13 @@ struct ChatMessage { let role: String; let content: String }   // role: "user" |
 struct AIPrompt { let system: String; let messages: [ChatMessage] }
 
 enum AIError: LocalizedError {
-    case noKey(String), badResponse, http(Int, String)
+    case noKey(String), badResponse, http(Int, String), badURL(String)
     var errorDescription: String? {
         switch self {
         case .noKey(let name): return "No API key set for \(name). Open AI ▸ Settings… to add one."
         case .badResponse:     return "The AI service returned an unexpected response."
         case .http(let code, let msg): return "AI request failed (HTTP \(code)). \(msg)"
+        case .badURL(let url): return "The AI endpoint URL is invalid: \(url)\nCheck the Base URL in AI ▸ Settings…."
         }
     }
 }
@@ -117,22 +118,28 @@ final class AIService {
         var req: URLRequest
         var json: [String: Any]
 
+        // Base URL is user-editable in Settings — a malformed value must produce
+        // a descriptive error, never a force-unwrap crash.
+        func endpoint(_ path: String) throws -> URL {
+            guard let url = URL(string: base + path) else { throw AIError.badURL(base + path) }
+            return url
+        }
+
         switch p.kind {
         case .openai:
-            req = URLRequest(url: URL(string: base + "/chat/completions")!)
+            req = URLRequest(url: try endpoint("/chat/completions"))
             req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
             var msgs: [[String: String]] = [["role": "system", "content": prompt.system]]
             msgs += prompt.messages.map { ["role": $0.role, "content": $0.content] }
             json = ["model": mdl, "messages": msgs]
         case .anthropic:
-            req = URLRequest(url: URL(string: base + "/v1/messages")!)
+            req = URLRequest(url: try endpoint("/v1/messages"))
             req.setValue(key, forHTTPHeaderField: "x-api-key")
             req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             let msgs = prompt.messages.map { ["role": $0.role, "content": $0.content] }
             json = ["model": mdl, "max_tokens": 2048, "system": prompt.system, "messages": msgs]
         case .gemini:
-            let url = base + "/models/\(mdl):generateContent?key=\(key)"
-            req = URLRequest(url: URL(string: url)!)
+            req = URLRequest(url: try endpoint("/models/\(mdl):generateContent?key=\(key)"))
             let contents = prompt.messages.map { m -> [String: Any] in
                 ["role": m.role == "assistant" ? "model" : "user", "parts": [["text": m.content]]]
             }
