@@ -275,6 +275,9 @@ private extension String {
 // MARK: - Viewer window
 
 final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate {
+    private static var isFirstWindow = true
+    private static var cascadePoint = NSPoint.zero
+
     let fileURL: URL
     private var webView: WKWebView!
     private let tempFile: URL
@@ -303,7 +306,14 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "MarkdownViewer"
         window.title = self.fileURL.lastPathComponent
-        window.setFrameAutosaveName("MarkdownViewerWindow")
+        // Only the first window restores/saves the shared frame — giving every
+        // window the same autosave name made them fight over it and stack
+        // exactly on top of each other. Later windows cascade instead.
+        if Self.isFirstWindow {
+            Self.isFirstWindow = false
+            window.setFrameAutosaveName("MarkdownViewerWindow")
+        }
+        Self.cascadePoint = window.cascadeTopLeft(from: Self.cascadePoint)
         window.minSize = NSSize(width: 420, height: 320)
         super.init(window: window)
 

@@ -5,6 +5,15 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.8] — 2026-07-12
+
+### Fixed
+
+- **Multiple windows no longer stack exactly on top of each other.** Every
+  window shared one frame-autosave name, so they all restored to the identical
+  position and overwrote each other's saved frame. The first window keeps the
+  remembered frame; additional windows cascade down-right from it.
+
 ## [1.7] — 2026-07-12
 
 ### Fixed
