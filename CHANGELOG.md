@@ -5,6 +5,19 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1] — 2026-07-12
+
+### Fixed
+
+- **File ▸ Save could erase or stale-save the document.** The save path wrote a
+  cached copy of the editor text that started out *empty* and was only updated
+  250ms after typing — so clicking File ▸ Save on a freshly opened, unedited
+  document overwrote the file with an empty string, and saving right after an
+  external-change reload silently reverted the external edits. The cache is now
+  seeded from disk on every load/reload, and Save first asks the page for the
+  live editor text (new `window.__getText` hook), falling back to the cache only
+  if the page can't answer.
+
 ## [1.0] — 2026-07-12
 
 ### Added

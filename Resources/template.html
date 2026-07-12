@@ -415,6 +415,9 @@ const MD = __MARKDOWN__;
   }
   // Called by Swift after a successful disk write.
   window.__onSaved = function () { setDirty(false); };
+  // Called by Swift right before a disk write so menu/close-triggered saves
+  // always get the live editor text, never a stale/empty cached copy.
+  window.__getText = function () { return editor.value; };
 
   // ---- Editing ----
   var renderTimer = null, changeTimer = null;

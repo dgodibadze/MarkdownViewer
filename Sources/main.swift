@@ -329,6 +329,12 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         // local images referenced by the markdown can both load.
         webView.loadFileURL(tempFile, allowingReadAccessTo: URL(fileURLWithPath: "/"))
         lastModified = modificationDate()
+        // Seed the save cache with what's actually on disk. Without this, a
+        // menu-triggered Save before any edit would write "" and wipe the file;
+        // after an external-change reload it would silently revert the file.
+        if let data = try? Data(contentsOf: fileURL) {
+            lastText = String(decoding: data, as: UTF8.self)
+        }
     }
 
     private func modificationDate() -> Date? {
@@ -449,8 +455,19 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         completionHandler(alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil)
     }
 
-    /// Writes the latest editor text back to the markdown file on disk.
+    /// Saves the document: pulls the live editor text from the page, then writes it.
+    /// Falls back to the cached `lastText` when the page can't answer (e.g. the
+    /// error page is showing). Captures self strongly so a save triggered while
+    /// the window is closing still completes.
     func save() {
+        webView.evaluateJavaScript("window.__getText ? window.__getText() : null") { result, _ in
+            if let text = result as? String { self.lastText = text }
+            self.writeToDisk()
+        }
+    }
+
+    /// Writes the latest editor text back to the markdown file on disk.
+    private func writeToDisk() {
         do {
             try lastText.write(to: fileURL, atomically: true, encoding: .utf8)
             // Treat our own write as already-seen so the poll doesn't reload it.
