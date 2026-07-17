@@ -192,8 +192,11 @@ Both have caught real errors. They do not replace an actual build.
 
 ## State as of this handoff
 
-Clean tree; app is at **v1.3** (2026-07-12) — see `CHANGELOG.md` for release
-notes. v1.2 was the big review release (save/quit data-loss fixes, CSP +
+App is at **v1.6** (2026-07-16) — see `CHANGELOG.md` for release notes. v1.6
+was a bugfix batch from a full review: scroll-restore ordering, CRLF
+preservation on save, close-with-save race, mode-persist leak, Escape-closes-
+find (Mac), navigation lockdown (+ `form-action 'none'` CSP), About-docs
+recents leak, case-insensitive dedupe. v1.2 was the big review release (save/quit data-loss fixes, CSP +
 sanitizer, undo-preserving edits, anchor links, File ▸ New, Open Recent,
 universal binary, **AI assistant removed** — no networking code remains; don't
 reintroduce it without being asked; the old implementation is in git history).

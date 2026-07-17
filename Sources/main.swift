@@ -131,6 +131,10 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     private(set) var isDirty = false
     /// Latest editor text pushed from the page, used for menu/close-triggered saves.
     private var lastText: String = ""
+    /// True when the file on disk used CRLF line endings. The textarea's
+    /// `value` is LF-normalized by the HTML spec, so without re-applying CRLF
+    /// on save a one-character edit would silently rewrite every line ending.
+    private var usesCRLF = false
     /// Mode to force once the page finishes loading (e.g. "split" for new
     /// documents). Calling __setMode before the page loads is a silent no-op,
     /// so this is applied from didFinish instead.
@@ -205,6 +209,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         // after an external-change reload it would silently revert the file.
         if let fileURL = fileURL, let data = try? Data(contentsOf: fileURL) {
             lastText = String(decoding: data, as: UTF8.self)
+            usesCRLF = lastText.contains("\r\n")
         }
     }
 
@@ -307,7 +312,12 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     private func writeToDisk() -> Bool {
         guard let fileURL = fileURL else { return false }
         do {
-            try lastText.write(to: fileURL, atomically: true, encoding: .utf8)
+            // Preserve the file's original line endings: the editor always
+            // hands back LF, so normalize first, then re-apply CRLF if that's
+            // what the file used.
+            var text = lastText.replacingOccurrences(of: "\r\n", with: "\n")
+            if usesCRLF { text = text.replacingOccurrences(of: "\n", with: "\r\n") }
+            try text.write(to: fileURL, atomically: true, encoding: .utf8)
             // Treat our own write as already-seen so the poll doesn't reload it.
             lastModified = modificationDate()
             isDirty = false
@@ -325,9 +335,11 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     }
 
     /// Drives the page's Preview/Edit/Split toggle from the native View menu.
-    func setEditorMode(_ mode: String) {
+    /// `persist: false` applies the mode without overwriting the remembered
+    /// preference (used for the deferred startMode of new documents).
+    func setEditorMode(_ mode: String, persist: Bool = true) {
         let safe = mode.replacingOccurrences(of: "'", with: "")
-        webView.evaluateJavaScript("window.__setMode && window.__setMode('\(safe)')")
+        webView.evaluateJavaScript("window.__setMode && window.__setMode('\(safe)', \(persist))")
     }
 
     /// Toggles soft-wrap in the editor from the native View menu.
@@ -359,24 +371,32 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if let mode = startMode {
             startMode = nil
-            setEditorMode(mode)
+            setEditorMode(mode, persist: false)
         }
     }
 
-    // Open http/https links in the default browser; allow local navigation.
+    // Only local content may load in the web view. A real link click on
+    // http/https/mailto opens in the default browser; every other non-file
+    // navigation (scripted, <meta http-equiv="refresh">, form submission from
+    // raw HTML in a document) is cancelled outright — a malicious markdown
+    // file must not be able to steer the viewer to a remote page.
     func webView(_ webView: WKWebView,
                  decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        if let url = navigationAction.request.url,
-           let scheme = url.scheme?.lowercased(),
-           scheme == "http" || scheme == "https" || scheme == "mailto" {
-            if navigationAction.navigationType == .linkActivated {
-                NSWorkspace.shared.open(url)
-                decisionHandler(.cancel)
-                return
-            }
+        guard let url = navigationAction.request.url,
+              let scheme = url.scheme?.lowercased() else {
+            decisionHandler(.allow)
+            return
         }
-        decisionHandler(.allow)
+        if scheme == "file" || scheme == "about" {
+            decisionHandler(.allow)
+            return
+        }
+        if navigationAction.navigationType == .linkActivated,
+           scheme == "http" || scheme == "https" || scheme == "mailto" {
+            NSWorkspace.shared.open(url)
+        }
+        decisionHandler(.cancel)
     }
 }
 
@@ -412,9 +432,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+    /// The on-disk canonical path (fixes letter case on case-insensitive
+    /// volumes) so "README.md" and "readme.md" dedupe to one window.
+    private func canonicalPath(_ url: URL) -> String {
+        return (try? url.resourceValues(forKeys: [.canonicalPathKey]))?.canonicalPath ?? url.path
+    }
+
     func openFile(_ url: URL, noteAsRecent: Bool = true) {
         let resolved = url.resolvingSymlinksInPath()
-        if let existing = controllers.first(where: { $0.fileURL == resolved }) {
+        let target = canonicalPath(resolved)
+        if let existing = controllers.first(where: { c in
+            guard let f = c.fileURL else { return false }
+            return canonicalPath(f) == target
+        }) {
             existing.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -520,9 +550,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
               controller.isDirty else { return true }
         switch unsavedChangesChoice(for: controller) {
         case .save:
-            if controller.fileURL != nil { controller.save(); return true }
-            // Untitled: the save panel is asynchronous — keep the window open
-            // and only close it once the save actually succeeded.
+            // Saves are asynchronous (they pull the live text from the page,
+            // and Untitled documents run a save panel first) — keep the window
+            // open and only close it once the write actually succeeded.
+            // Closing immediately would tear the page down mid-save and fall
+            // back to a cached copy that can be ~250ms stale.
             controller.save { ok in if ok { sender.close() } }
             return false
         case .discard: return true
@@ -762,7 +794,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let dst = tmpDir.appendingPathComponent(name)
         try? FileManager.default.removeItem(at: dst)
         do { try FileManager.default.copyItem(at: src, to: dst) } catch { NSSound.beep(); return }
-        openFile(dst)
+        // Throwaway temp copies don't belong in Open Recent.
+        openFile(dst, noteAsRecent: false)
     }
 
     // MARK: Menu

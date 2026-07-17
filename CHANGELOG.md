@@ -5,6 +5,44 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [1.6] — 2026-07-16
+
+### Fixed
+
+- **Preview scroll position now really survives live reloads.** The restore
+  ran before the first render, when the preview was still empty, so the
+  `scrollTop` write clamped to 0 every time — the feature had never worked.
+  It now runs after the initial render.
+- **Line endings are preserved on save.** The editor (`<textarea>`) hands back
+  LF-normalized text per the HTML spec, so saving a CRLF file silently
+  rewrote every line ending — a one-character edit produced a whole-file diff.
+  Both apps now remember the file's original line endings and re-apply them.
+- **"Save" from the close dialog can no longer lose the last keystrokes**
+  (macOS). The window closed immediately while the save was still pulling the
+  live text from the page; if the page was torn down first, the write fell
+  back to a cache up to 250 ms stale. The window now stays open until the
+  write has actually succeeded (and stays open if it fails).
+- **File ▸ New no longer changes how future documents open** (both platforms).
+  Forcing Split mode for a new document also overwrote the remembered view
+  mode, so every file opened afterwards started in Split. Programmatic mode
+  switches (New's forced Split, Find leaving Preview) no longer persist.
+- **Escape closes the find bar from anywhere** (macOS) — previously only while
+  focus was inside the find/replace fields; Windows already behaved.
+- **A document can no longer steer the viewer to a remote page.** Raw HTML in
+  markdown (`<meta http-equiv="refresh">`, forms, scripted navigation) could
+  navigate the web view itself to an external site. Non-local navigation is
+  now cancelled outright on both platforms — only a real link click opens the
+  default browser — and the CSP gained `form-action 'none'`.
+- **The About window's Changelog/Architecture/Design docs no longer pollute
+  File ▸ Open Recent** (macOS; they are throwaway temp copies — Windows
+  already excluded them).
+- **Opening the same file twice with different letter case** (e.g. `README.md`
+  vs `readme.md` on a case-insensitive volume) now reuses the existing window
+  on macOS instead of opening a second one whose saves could fight the first.
+- Small cleanups: `.markdn` files are now associated on macOS (the Open panel
+  and Windows already accepted them); the zoom-level read guards `localStorage`
+  access like every other accessor.
+
 ## [1.5] — 2026-07-12
 
 ### Fixed

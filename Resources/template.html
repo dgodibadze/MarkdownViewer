@@ -6,7 +6,7 @@
      load a remote script that talks to the native bridge (including "save").
      Scripts/styles: bundled file:// assets + our inline code only. Images may
      be local or remote; nothing on the page may open network connections. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file: 'unsafe-inline'; style-src file: 'unsafe-inline'; img-src file: data: https: http:; media-src file: data:; font-src file: data:; connect-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file: 'unsafe-inline'; style-src file: 'unsafe-inline'; img-src file: data: https: http:; media-src file: data:; font-src file: data:; connect-src 'none'; form-action 'none'">
 <base href="__BASE__">
 <title>__TITLE__</title>
 
@@ -492,11 +492,14 @@ const MD = __MARKDOWN__;
 
   // ---- Mode switching ----
   var modeButtons = Array.prototype.slice.call(document.querySelectorAll('.segmented button'));
-  function setMode(mode) {
+  // `persist === false` applies the mode without overwriting the remembered
+  // preference — used for programmatic switches (a new document forcing Split,
+  // Find leaving Preview) so they don't change how future documents open.
+  function setMode(mode, persist) {
     if (mode !== 'preview' && mode !== 'edit' && mode !== 'split') mode = 'preview';
     body.setAttribute('data-mode', mode);
     modeButtons.forEach(function (b) { b.setAttribute('aria-selected', String(b.dataset.mode === mode)); });
-    try { localStorage.setItem('viewerMode', mode); } catch (e) {}
+    if (persist !== false) { try { localStorage.setItem('viewerMode', mode); } catch (e) {} }
     render();
     if (mode !== 'preview') editor.focus();
   }
@@ -551,11 +554,6 @@ const MD = __MARKDOWN__;
     syncScroll(preview, editor);
     try { sessionStorage.setItem('scrollY', String(preview.scrollTop)); } catch (e) {}
   }, { passive: true });
-  // Restore preview scroll position across live-reloads (same file:// origin).
-  try {
-    var _sy = sessionStorage.getItem('scrollY');
-    if (_sy) preview.scrollTop = parseInt(_sy, 10);
-  } catch (e) {}
 
   // ---- Wrap toggle (View ▸ Wrap Lines) ----
   function wrapOn() {
@@ -731,8 +729,9 @@ const MD = __MARKDOWN__;
       modeBtn.setAttribute('aria-pressed', String(!!on));
     }
     function open(replaceMode) {
-      // Find needs the editor visible; switch out of Preview-only mode.
-      if (body.getAttribute('data-mode') === 'preview') setMode('edit');
+      // Find needs the editor visible; switch out of Preview-only mode
+      // (without persisting — this is a side effect, not a mode choice).
+      if (body.getAttribute('data-mode') === 'preview') setMode('edit', false);
       bar.hidden = false;
       setReplaceMode(replaceMode);
       // Seed the find field with any current editor selection.
@@ -772,11 +771,15 @@ const MD = __MARKDOWN__;
       recompute(false); selectCurrent();
     });
 
-    // Keyboard shortcuts (work even when the web view has focus).
+    // Keyboard shortcuts (work even when the web view has focus). Escape
+    // closes the bar from anywhere — not just from inside the find fields.
     document.addEventListener('keydown', function (e) {
       if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault();
         open(e.altKey);
+      } else if (e.key === 'Escape' && !bar.hidden) {
+        e.preventDefault();
+        close();
       }
     });
   })();
@@ -827,7 +830,7 @@ const MD = __MARKDOWN__;
   // ---- Document zoom: Cmd/Ctrl +  /  Cmd/Ctrl -  /  Cmd/Ctrl 0 (reset) ----
   (function zoom() {
     var KEY = 'zoomLevel', MIN = 0.6, MAX = 2.6, STEP = 0.1;
-    function get() { var v = parseFloat(localStorage.getItem(KEY)); return isNaN(v) ? 1 : v; }
+    function get() { try { var v = parseFloat(localStorage.getItem(KEY)); return isNaN(v) ? 1 : v; } catch (e) { return 1; } }
     function clamp(v) { return Math.min(MAX, Math.max(MIN, Math.round(v * 100) / 100)); }
     function apply(v) {
       document.documentElement.style.setProperty('--zoom', String(v));
@@ -848,7 +851,14 @@ const MD = __MARKDOWN__;
   applyWrap(wrapOn());
   var startMode = 'preview';
   try { startMode = localStorage.getItem('viewerMode') || 'preview'; } catch (e) {}
-  setMode(startMode);
+  setMode(startMode, false);
+  // Restore preview scroll position across live-reloads (same origin). Must
+  // run AFTER the initial render — with the preview still empty, a scrollTop
+  // write just clamps to 0 and the saved position is lost.
+  try {
+    var _sy = sessionStorage.getItem('scrollY');
+    if (_sy) preview.scrollTop = parseInt(_sy, 10);
+  } catch (e) {}
 })();
 </script>
 </body>

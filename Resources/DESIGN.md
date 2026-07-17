@@ -28,8 +28,13 @@ Markdown may contain raw HTML, so rendered documents are treated as untrusted:
 - **CSP** (meta tag in the template head): scripts and styles may only come
   from `file:` (the bundled assets) or be inline (the app's own code); images
   may be local or remote; the page may open **no** network connections
-  (`connect-src 'none'`). A malicious document cannot load remote code or
-  exfiltrate content.
+  (`connect-src 'none'`) and submit **no** forms (`form-action 'none'`). A
+  malicious document cannot load remote code or exfiltrate content.
+- **Navigation lockdown** (native side): only `file:`/`about:` may load in the
+  web view. A real link click on http/https/mailto opens the default browser;
+  every other remote navigation a document could trigger through raw HTML
+  (`<meta http-equiv="refresh">`, forms, scripted `location` changes) is
+  cancelled without opening anything.
 - **Sanitizer**: `innerHTML` never executes `<script>` tags, so the one raw-HTML
   vector that actually runs is inline event handlers. After every render, all
   `on*` attributes and `javascript:`/`vbscript:` URLs are stripped from the
@@ -42,7 +47,9 @@ Markdown may contain raw HTML, so rendered documents are treated as untrusted:
 ## File management
 
 - **File ▸ New (⌘N)** opens a blank **Untitled** document (`fileURL == nil`,
-  starts in Edit mode). The first save runs an `NSSavePanel` sheet with
+  starts in Split mode — applied after page load via the deferred `startMode`,
+  and *without* persisting, so it never changes how other documents open).
+  The first save runs an `NSSavePanel` sheet with
   `Untitled.md` pre-filled; `allowsOtherFileTypes` lets the user type any other
   extension. After a successful first save the window retitles, live-reload
   watching starts, and the page re-renders so `<base href>` points at the real
@@ -51,7 +58,10 @@ Markdown may contain raw HTML, so rendered documents are treated as untrusted:
 - **File ▸ Open Recent** lists the last 10 opened files, persisted in
   `UserDefaults` (`recentFiles`) and rebuilt from disk every time the menu
   opens (missing files are hidden; Clear Menu empties it). Opens also feed
-  `NSDocumentController` so the Dock icon's right-click menu matches.
+  `NSDocumentController` so the Dock icon's right-click menu matches. The
+  About window's bundled docs open as throwaway temp copies and are *not*
+  recorded. Deduplication of already-open files is case-insensitive (canonical
+  path), matching case-insensitive volumes.
 
 ## Save / dirty pipeline (data-loss invariants)
 
@@ -64,9 +74,14 @@ The `<textarea>` editor is the source of truth. Three rules keep saves safe:
    only if the page can't answer (e.g. the error page is showing). The page
    also pushes `change` messages (debounced 250ms) as a belt-and-braces cache.
 3. **Every exit path is guarded**: closing a window (⌘W) *and* quitting (⌘Q)
-   both show Save / Don't Save / Cancel for dirty documents. Quit uses
-   `.terminateLater` and only completes after all chosen saves have hit disk,
-   because saves are asynchronous.
+   both show Save / Don't Save / Cancel for dirty documents. Because saves are
+   asynchronous, the window stays open until its save has actually hit disk,
+   and quit uses `.terminateLater` until all chosen saves have completed.
+
+**Line endings are preserved**: the `<textarea>` returns LF-normalized text
+(HTML spec), so the native side remembers whether the file on disk used CRLF
+and re-applies it on every write — editing one character never rewrites the
+whole file's line endings.
 
 After a successful write, Swift calls `window.__onSaved()` (clears the dirty
 flag) and refreshes its stored modification date so its own write doesn't
@@ -85,7 +100,9 @@ button is the unsaved-changes indicator.
 Each controller polls the file's modification date once a second. A change
 re-renders the document — **suspended while the buffer is dirty** so edits are
 never clobbered. Preview scroll position survives reloads via
-`sessionStorage`. The error page also records the mtime; otherwise a failed
+`sessionStorage` (restored *after* the initial render — before it, the empty
+preview clamps any `scrollTop` write to 0). The error page also records the
+mtime; otherwise a failed
 render would re-render every tick forever. View ▸ Reload From Disk (⌘R)
 triggers the same re-render manually, confirming first if edits would be lost.
 
@@ -107,6 +124,8 @@ triggers the same re-render manually, confirming first if edits would be lost.
   or highlights drift; both live in one CSS rule. Scroll-to-match uses the
   mark's real rendered position, so it's exact under soft wrap. The `▸`
   toggle in the bar expands the Replace controls (also via ⌥⌘F / Ctrl+H).
+  Escape closes the bar from anywhere in the page, not just the find fields.
+  Opening Find from Preview mode switches to Edit without persisting the mode.
 - **Scroll sync (Split mode)** uses a driver-pane model: only the pane claimed
   by real input (`wheel`/`mousedown`/`touchstart`/`keydown`/`focusin`)
   propagates its scroll, plus a 1px write threshold. Timer/flag guards are

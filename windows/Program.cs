@@ -153,6 +153,10 @@ sealed class ViewerTab : TabPage
     /// documents). Calling __setMode before the page loads is a silent no-op,
     /// so this is applied from NavigationCompleted instead.
     public string StartMode;
+    /// True when the file on disk used CRLF line endings. The textarea's
+    /// `value` is LF-normalized by the HTML spec, so without re-applying CRLF
+    /// on save a one-character edit would silently rewrite every line ending.
+    bool usesCrLf;
 
     public string DisplayName => FilePath != null ? Path.GetFileName(FilePath) : "Untitled";
 
@@ -193,24 +197,28 @@ sealed class ViewerTab : TabPage
         // Apply a deferred start mode, then give the page keyboard focus.
         web.CoreWebView2.NavigationCompleted += (_, __) =>
         {
-            if (StartMode != null) { var m = StartMode; StartMode = null; SetEditorMode(m); }
+            if (StartMode != null) { var m = StartMode; StartMode = null; SetEditorMode(m, persist: false); }
             if (host.ActiveTab == this) FocusWeb();
         };
-        // Open http/https/mailto links in the default browser; allow local navigation.
+        // Open user-clicked http/https/mailto links in the default browser;
+        // cancel every other remote navigation (scripted, <meta refresh> from
+        // raw HTML in a document) WITHOUT opening the browser — a malicious
+        // markdown file must not be able to auto-launch pages.
         web.CoreWebView2.NavigationStarting += (_, e) =>
         {
             var uri = e.Uri ?? "";
             if (uri.StartsWith("http://") || uri.StartsWith("https://") || uri.StartsWith("mailto:"))
             {
                 e.Cancel = true;
-                OpenExternal(uri);
+                if (e.IsUserInitiated) OpenExternal(uri);
             }
         };
         web.CoreWebView2.NewWindowRequested += (_, e) =>
         {
             e.Handled = true;
             var uri = e.Uri ?? "";
-            if (uri.StartsWith("http://") || uri.StartsWith("https://") || uri.StartsWith("mailto:"))
+            if (e.IsUserInitiated &&
+                (uri.StartsWith("http://") || uri.StartsWith("https://") || uri.StartsWith("mailto:")))
                 OpenExternal(uri);
         };
 
@@ -245,7 +253,7 @@ sealed class ViewerTab : TabPage
         // menu-triggered Save before any edit would write "" and wipe the file;
         // after an external-change reload it would silently revert the file.
         if (FilePath != null)
-            try { lastText = File.ReadAllText(FilePath); } catch { }
+            try { lastText = File.ReadAllText(FilePath); usesCrLf = lastText.Contains("\r\n"); } catch { }
     }
 
     DateTime? ModificationDate()
@@ -389,7 +397,12 @@ sealed class ViewerTab : TabPage
         if (FilePath == null) return false;
         try
         {
-            File.WriteAllText(FilePath, lastText, new UTF8Encoding(false));
+            // Preserve the file's original line endings: the editor always
+            // hands back LF, so normalize first, then re-apply CRLF if that's
+            // what the file used.
+            var text = lastText.Replace("\r\n", "\n");
+            if (usesCrLf) text = text.Replace("\n", "\r\n");
+            File.WriteAllText(FilePath, text, new UTF8Encoding(false));
             // Treat our own write as already-seen so the poll doesn't reload it.
             lastModified = ModificationDate();
             SetDirty(false);
@@ -420,11 +433,13 @@ sealed class ViewerTab : TabPage
         RenderAndLoad();
     }
 
-    public void SetEditorMode(string mode)
+    /// `persist: false` applies the mode without overwriting the remembered
+    /// preference (used for the deferred StartMode of new documents).
+    public void SetEditorMode(string mode, bool persist = true)
     {
         var safe = mode.Replace("'", "");
         FocusWeb();
-        RunJS($"window.__setMode && window.__setMode('{safe}')");
+        RunJS($"window.__setMode && window.__setMode('{safe}', {(persist ? "true" : "false")})");
     }
 
     public void ToggleWrapInPage() => RunJS("window.__toggleWrap && window.__toggleWrap()");
