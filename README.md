@@ -8,7 +8,7 @@
 Preview, Edit, and Split with live rendering, synced scrolling, and
 find & replace — 100% offline.
 
-![version](https://img.shields.io/badge/version-1.8-blueviolet)
+![version](https://img.shields.io/badge/version-1.9-blueviolet)
 ![platform](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-blue)
 ![license](https://img.shields.io/badge/license-GPLv3-green)
 ![built with](https://img.shields.io/badge/built%20with-Swift%20%2B%20WebKit%20%C2%B7%20C%23%20%2B%20WebView2-orange)
@@ -53,7 +53,7 @@ file per platform driving a system web view, ~1,000 lines each.
 - 🔄 **Live reload** when the file changes on disk (paused while you have unsaved edits), preserving your scroll position
 
 **Editing**
-- 💾 **Save** (`⌘S` · `Ctrl+S`) with a dirty-dot and Save / Don't Save / Cancel guards on close *and* quit, and **Save As…** (`⇧⌘S` · `Ctrl+Shift+S`) — original line endings (LF/CRLF) are preserved
+- 💾 **Save** (`⌘S` · `Ctrl+S`) with close/quit guards and external-change conflict detection, plus **Save As…** (`⇧⌘S` · `Ctrl+Shift+S`) — UTF-8/UTF-16/UTF-32 BOMs and LF/CRLF/CR line endings are preserved
 - ☑️ **Clickable task checkboxes** — tick `- [ ]` items right in the preview; the edit lands in the source, undo-safe
 - 🆕 **New documents** (`⌘N` · `Ctrl+N`) opening in Split mode; first save defaults to `.md`, any typed extension accepted
 - 🔍 **Find & Replace** (`⌘F`/`⌥⌘F` · `Ctrl+F`/`Ctrl+H`) with match count, case and whole-word toggles — undo-safe
@@ -68,7 +68,9 @@ file per platform driving a system web view, ~1,000 lines each.
 **Trust**
 - 🔒 **Zero network requests** — everything renders from bundled assets
 - 🛡️ Documents are treated as untrusted: a Content-Security-Policy plus an HTML
-  sanitizer keep raw-HTML markdown from running scripts or phoning home
+  allowlist sanitizer, scoped local-resource hosts, and an origin-checked native
+  bridge keep raw-HTML markdown from running scripts, reading unrelated files,
+  or phoning home
 
 ## Install
 
@@ -84,8 +86,10 @@ curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/inst
 irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.ps1 | iex
 ```
 
-The installers handle the rest — no admin rights needed, and a running copy is
-asked to quit before files are replaced:
+The installers verify release checksums, need no admin rights, and ask a running
+copy to quit normally before files are replaced. The macOS installer preserves
+Gatekeeper quarantine so macOS can perform its normal first-launch checks. Both
+installers validate a staged replacement before swapping out the working copy:
 
 - **macOS** installs to **`/Applications/MarkdownViewer.app`** (latest DMG from
   [Releases](../../releases), or built from source if none is published).

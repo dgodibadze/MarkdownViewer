@@ -2,3 +2,8 @@
 *.sh text eol=lf
 # PowerShell is fine either way; keep native.
 *.ps1 text
+
+# Vendored minified assets are verified byte-for-byte by Resources/SHA256SUMS.
+# Treat them as binary so Git never rewrites line endings or reports upstream
+# minifier whitespace as a source-formatting error.
+Resources/*.min.js binary

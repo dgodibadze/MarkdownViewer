@@ -29,7 +29,7 @@ fetch "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/g
 
 # Mermaid + KaTeX (offline; loaded lazily by the template only when a document
 # actually uses them). KaTeX's CSS references fonts/ relative to itself.
-fetch "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"                  "mermaid.min.js"
+fetch "https://cdn.jsdelivr.net/npm/mermaid@10.9.6/dist/mermaid.min.js"                  "mermaid.min.js"
 fetch "https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.js"                     "katex.min.js"
 fetch "https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css"                    "katex.min.css"
 fetch "https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/contrib/auto-render.min.js"       "katex-auto-render.min.js"
@@ -43,6 +43,9 @@ for F in KaTeX_AMS-Regular KaTeX_Caligraphic-Bold KaTeX_Caligraphic-Regular \
   fetch "https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/fonts/$F.woff2" "fonts/$F.woff2"
 done
 
+echo "==> Verifying pinned asset checksums…"
+shasum -a 256 -c "$RES/SHA256SUMS"
+
 echo "==> Compiling Swift (universal: arm64 + x86_64)…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -53,9 +56,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # other instead of failing the whole build.
 BIN="$APP/Contents/MacOS/MarkdownViewer"
 SLICES=""
+MODULE_CACHE="${TMPDIR:-/tmp}/MarkdownViewer-SwiftModuleCache"
+mkdir -p "$MODULE_CACHE"
 for ARCH in arm64 x86_64; do
-  if swiftc -O -target "$ARCH-apple-macos11.0" \
-       -framework Cocoa -framework WebKit -framework Security \
+  if swiftc -O -module-cache-path "$MODULE_CACHE" -target "$ARCH-apple-macos11.0" \
+       -framework Cocoa -framework WebKit -framework Security -framework CryptoKit \
        -o "$BIN.$ARCH" Sources/main.swift; then
     echo "    built $ARCH"
     SLICES="$SLICES $BIN.$ARCH"
@@ -79,7 +84,7 @@ cp "$RES"/template.html \
    "$RES"/github-markdown-light.css "$RES"/github-markdown-dark.css \
    "$RES"/hljs-github-light.css "$RES"/hljs-github-dark.css \
    "$RES"/mermaid.min.js "$RES"/katex.min.js "$RES"/katex.min.css \
-   "$RES"/katex-auto-render.min.js \
+   "$RES"/katex-auto-render.min.js "$RES"/SHA256SUMS \
    CHANGELOG.md README.md "$RES"/ARCHITECTURE.md "$RES"/DESIGN.md \
    "$APP/Contents/Resources/"
 cp -R "$RES/fonts" "$APP/Contents/Resources/fonts"

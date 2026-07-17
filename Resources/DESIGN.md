@@ -13,16 +13,17 @@ built that way, so changes don't quietly break the invariants.
    JS string literal). **`__MARKDOWN__` is always substituted last** — it
    injects arbitrary document text, and any token replaced after it would also
    match occurrences of that token *inside* the document.
-3. The result is written to a temp HTML file and loaded with
-   `loadFileURL(allowingReadAccessTo: "/")` so bundled assets and local images
-   both resolve.
+3. The result is written to a temp HTML file. The page can read only that temp
+   directory; bundled assets and document-relative files resolve through two
+   narrowly scoped URL mappings (`mdv-resource:` / `mdv-document:` on macOS,
+   private virtual HTTPS hosts on Windows).
 4. In the page, `marked.parse()` renders GitHub-flavored markdown into the
    preview, `highlight.js` colorizes code, heading ids are generated
    (GitHub-style slugs, deduped `-1`, `-2`, …), the output is sanitized, and
    copy buttons are attached to code blocks.
 5. **Mermaid & KaTeX load lazily**: ` ```mermaid ` fences become theme-aware
    diagrams and `$$…$$` / `\(…\)` / `\[…\]` become math, but the bundled
-   libraries are only injected (via `file:` script tags, CSP-allowed) when a
+   libraries are only injected through the scoped asset mapping when a
    document actually uses them. Theme switches re-render diagrams (the theme
    is baked into Mermaid's SVG). KaTeX caveat: marked runs first, so
    markdown-significant characters inside inline math can be transformed
@@ -30,27 +31,31 @@ built that way, so changes don't quietly break the invariants.
 6. **Task checkboxes are live**: the Nth preview checkbox maps to the Nth
    `[ ]`/`[x]` marker in the source (positions recomputed at click time);
    clicking writes the toggle back through `spliceEditor()` (undoable, marks
-   dirty). If the counts don't match 1:1 (task syntax in a code fence,
-   raw-HTML inputs), checkboxes stay disabled rather than guess.
+   dirty). Only Marked-generated inputs carry a random per-render token; raw
+   HTML inputs are removed. If source/render counts do not match 1:1 (for
+   example task syntax in a code fence), checkboxes stay disabled rather than
+   guess.
 
 ## Security model
 
 Markdown may contain raw HTML, so rendered documents are treated as untrusted:
 
-- **CSP** (meta tag in the template head): scripts and styles may only come
-  from `file:` (the bundled assets) or be inline (the app's own code); images
-  may be local or remote; the page may open **no** network connections
-  (`connect-src 'none'`) and submit **no** forms (`form-action 'none'`). A
-  malicious document cannot load remote code or exfiltrate content.
-- **Navigation lockdown** (native side): only `file:`/`about:` may load in the
-  web view. A real link click on http/https/mailto opens the default browser;
-  every other remote navigation a document could trigger through raw HTML
-  (`<meta http-equiv="refresh">`, forms, scripted `location` changes) is
-  cancelled without opening anything.
-- **Sanitizer**: `innerHTML` never executes `<script>` tags, so the one raw-HTML
-  vector that actually runs is inline event handlers. After every render, all
-  `on*` attributes and `javascript:`/`vbscript:` URLs are stripped from the
-  preview.
+- **CSP** permits only scoped bundled scripts/styles/fonts, document-local or
+  data images, and the app's inline bootstrap. Remote images, connections,
+  forms, objects, and unrelated base URLs are blocked.
+- **Scoped local resources** expose only bundled assets and regular files under
+  the document directory. Document resources are capped at 64 MiB; traversal,
+  symlink/junction escapes, pipes, devices, and unbounded reads are rejected.
+- **Navigation + bridge lockdown**: only the generated top-level temp page may
+  navigate or send native bridge messages. User-clicked web/mail links open in
+  the default app; document-local links are resolved inside the mapped folder
+  and safe document/image/media types are handed to the native shell.
+  Executable-capable local targets are revealed in Finder/Explorer instead;
+  every other scheme and subframe is rejected.
+- **Allowlist sanitizer** keeps only normal Markdown tags and required
+  attributes/URL forms. Styles, embedded pages, scripts, arbitrary controls,
+  event handlers, and active URL schemes are removed. Mermaid and KaTeX output
+  receives a second executable-attribute scrub after rendering.
 - **`</script>` escaping**: the markdown is embedded inside an inline script,
   so `jsStringLiteral()` explicitly escapes `</` — a document containing a
   literal `</script>` must not terminate the embedding script.
@@ -69,8 +74,9 @@ Markdown may contain raw HTML, so rendered documents are treated as untrusted:
   waiting on it is aborted rather than discarding the document.
 - **File ▸ Save As… (⇧⌘S / Ctrl+Shift+S)** runs the same panel pre-filled with
   the current name/folder, pulling the live editor text first. The document
-  then points at the new file (title, watching, recents); the original keeps
-  its last-saved content. The in-page ⌘S/Ctrl+S handler ignores Shift so the
+  adopts the new path only after the write succeeds and only when no other
+  window/tab already owns it; the original keeps its last-saved content. The
+  in-page ⌘S/Ctrl+S handler ignores Shift so the
   shortcut reaches the native menu (macOS) / in-page shortcut block (Windows).
 - **File ▸ Open Recent** lists the last 10 opened files, persisted in
   `UserDefaults` (`recentFiles`) and rebuilt from disk every time the menu
@@ -95,10 +101,20 @@ The `<textarea>` editor is the source of truth. Three rules keep saves safe:
    asynchronous, the window stays open until its save has actually hit disk,
    and quit uses `.terminateLater` until all chosen saves have completed.
 
-**Line endings are preserved**: the `<textarea>` returns LF-normalized text
-(HTML spec), so the native side remembers whether the file on disk used CRLF
-and re-applies it on every write — editing one character never rewrites the
-whole file's line endings.
+**File format is preserved**: the native side remembers UTF-8/UTF-16/UTF-32
+BOM state and LF/CRLF/CR line endings, then restores them after the textarea's
+mandatory LF normalization. Invalid or mixed-format input requires explicit
+confirmation before conversion to UTF-8/LF; a clean Save does not rewrite
+bytes. Writes use an atomic same-directory replacement so a crash cannot leave
+a truncated file.
+
+**External edits cannot be overwritten silently**: each load stores a
+size/mtime/SHA-256 fingerprint. Every save compares the current disk state with
+that fingerprint and requires an explicit Save Anyway decision after an
+external edit, deletion, or read failure. Rendering, editor seeding, and the
+fingerprint all come from one byte snapshot, so a concurrent replacement cannot
+make displayed text older than the accepted save baseline. An initial read
+failure is never treated as an empty document.
 
 After a successful write, Swift calls `window.__onSaved()` (clears the dirty
 flag) and refreshes its stored modification date so its own write doesn't
@@ -114,7 +130,8 @@ button is the unsaved-changes indicator.
 
 ## Live reload
 
-Each controller polls the file's modification date once a second. A change
+Each controller polls the file's modification date once a second, including a
+transition to a missing file. A change
 re-renders the document — **suspended while the buffer is dirty** so edits are
 never clobbered. Preview scroll position survives reloads via
 `sessionStorage` (restored *after* the initial render — before it, the empty
@@ -156,11 +173,11 @@ triggers the same re-render manually, confirming first if edits would be lost.
   position (in Edit mode: approximated from the heading's character position
   in the source, since the hidden preview has no geometry). Open/closed state
   persists in `localStorage("tocOpen")`.
-- **Find** also has a whole-word toggle (`\b` guards added only against
-  word-character needle edges — lookbehind isn't available on the oldest
-  supported WebKit).
+- **Find** also has a Unicode-aware whole-word toggle (letters, combining
+  marks, numbers, and underscore count as word characters).
 - **Print (⌘P / Ctrl+P)** prints the rendered preview only — `@media print`
-  hides the toolbar/editor/sidebar and un-clamps the page — via the native
+  hides the toolbar/editor/sidebar and un-clamps the page. Pending preview,
+  Mermaid, and KaTeX work finishes before the native
   print dialog (WKWebView `printOperation` / WebView2 `ShowPrintUI`), whose
   "Save as PDF" is the PDF export path.
 - **Anchor links**: heading ids are generated at render time and fragment

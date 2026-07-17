@@ -37,7 +37,8 @@ Identical to the macOS app:
 ## Build
 
 Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-(`winget install Microsoft.DotNet.SDK.8`) and the WebView2 Runtime (preinstalled on
+(`winget install Microsoft.DotNet.SDK.8`), Python 3 (for the shared-template
+generator), and the WebView2 Runtime (preinstalled on
 Windows 11; [download](https://developer.microsoft.com/microsoft-edge/webview2/) for
 older systems). Internet is needed on the first build to restore the WebView2 NuGet
 package (cached afterward).

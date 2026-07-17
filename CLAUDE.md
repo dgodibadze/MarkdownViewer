@@ -37,18 +37,18 @@ Everything else (Info.plist, build.sh, Icon/, dmg/, install.*) is packaging.
 
 `Renderer.render()` in main.swift reads `template.html`, substitutes four tokens,
 writes the result to a temp file, and loads it with
-`loadFileURL(_:allowingReadAccessTo: "/")`.
+`loadFileURL` with read access limited to that temporary render directory.
 
 | Token | Replaced with |
 |---|---|
-| `__RES__` | `file://` URL of the app's Resources dir (for marked/highlight/CSS) |
-| `__BASE__` | the markdown file's directory (so relative images resolve) |
+| `__RES__` | scoped `mdv-resource:` URL (virtual HTTPS host on Windows) |
+| `__BASE__` | scoped `mdv-document:` URL rooted at the document directory |
 | `__MARKDOWN__` | the file's text, JSON-encoded into a JS string literal |
 | `__TITLE__` | the filename, HTML-escaped |
 
-Read access is granted to `/` so the bundled assets *and* local images referenced
-by the markdown can both load. Assets are referenced by absolute `file://` URL, so
-the `<base href>` (pointing at the doc's folder) doesn't break them.
+Bundled assets and document-relative files are served through separate scoped
+handlers. Traversal is rejected; the page never receives filesystem-wide read
+access.
 
 ### Swift ↔ JS bridge
 
@@ -195,7 +195,10 @@ Both have caught real errors. They do not replace an actual build.
 
 ## State as of this handoff
 
-App is at **v1.8** (2026-07-16) — see `CHANGELOG.md` for release notes. v1.8
+App is at **v1.9** (2026-07-17) — see `CHANGELOG.md` for release notes. v1.9
+hardens local-resource isolation, HTML sanitization, bridge trust, navigation,
+asset/install verification, external-change saves, format preservation, and
+transactional Save As behavior on both platforms. v1.8
 added the whole review-suggested feature set: Print/PDF, TOC sidebar,
 clickable task checkboxes, offline Mermaid + KaTeX (lazy-loaded; assets
 fetched by build.sh), word count, zoom menu items, whole-word find, session
@@ -217,10 +220,9 @@ navigation-finish; calling `__setMode` before page load is a silent no-op).
 Notes: (1) commits between "v1.0 baseline" and "v1.2" carry interim v1.1–v2.4
 numbering from a per-fix versioning experiment that was rolled back — trust
 CHANGELOG.md for version mapping. (2) The Windows build (`windows/build.ps1`)
-requires a Windows machine with the .NET 8 SDK; the C# changes in v1.3 were
+requires a Windows machine with the .NET 8 SDK; v1.9's C# changes were
 statically reviewed but **not compiled** (no dotnet on this Mac) — build on
 Windows before releasing.
 
-Known future-feature backlog (unimplemented): PDF export/print, TOC sidebar,
-Mermaid/KaTeX, clickable task checkboxes, Dock-reopen / proxy-icon polish,
-file-descriptor watching instead of 1 Hz polling.
+Known future backlog: Dock-reopen polish, file-descriptor watching instead of
+1 Hz polling, and Developer ID signing/notarization for release artifacts.

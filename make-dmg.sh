@@ -24,8 +24,10 @@ echo "==> Building compressed image…"
 rm -f "$DMG"
 hdiutil create -volname "$VOL" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
+shasum -a 256 "$DMG" > "$DMG.sha256"
 
 echo ""
 echo "Done: $PWD/$DMG"
+echo "Checksum: $PWD/$DMG.sha256"
 echo "The disk image contains MarkdownViewer.app and an Applications alias — drag one onto the other to install."
 echo "Open it with: open '$PWD/$DMG'"
