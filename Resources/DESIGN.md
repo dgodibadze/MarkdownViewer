@@ -20,6 +20,18 @@ built that way, so changes don't quietly break the invariants.
    preview, `highlight.js` colorizes code, heading ids are generated
    (GitHub-style slugs, deduped `-1`, `-2`, …), the output is sanitized, and
    copy buttons are attached to code blocks.
+5. **Mermaid & KaTeX load lazily**: ` ```mermaid ` fences become theme-aware
+   diagrams and `$$…$$` / `\(…\)` / `\[…\]` become math, but the bundled
+   libraries are only injected (via `file:` script tags, CSP-allowed) when a
+   document actually uses them. Theme switches re-render diagrams (the theme
+   is baked into Mermaid's SVG). KaTeX caveat: marked runs first, so
+   markdown-significant characters inside inline math can be transformed
+   before KaTeX sees them.
+6. **Task checkboxes are live**: the Nth preview checkbox maps to the Nth
+   `[ ]`/`[x]` marker in the source (positions recomputed at click time);
+   clicking writes the toggle back through `spliceEditor()` (undoable, marks
+   dirty). If the counts don't match 1:1 (task syntax in a code fence,
+   raw-HTML inputs), checkboxes stay disabled rather than guess.
 
 ## Security model
 
@@ -55,6 +67,11 @@ Markdown may contain raw HTML, so rendered documents are treated as untrusted:
   watching starts, and the page re-renders so `<base href>` points at the real
   folder. Cancelling the panel reports the save as *not done* — a close or quit
   waiting on it is aborted rather than discarding the document.
+- **File ▸ Save As… (⇧⌘S / Ctrl+Shift+S)** runs the same panel pre-filled with
+  the current name/folder, pulling the live editor text first. The document
+  then points at the new file (title, watching, recents); the original keeps
+  its last-saved content. The in-page ⌘S/Ctrl+S handler ignores Shift so the
+  shortcut reaches the native menu (macOS) / in-page shortcut block (Windows).
 - **File ▸ Open Recent** lists the last 10 opened files, persisted in
   `UserDefaults` (`recentFiles`) and rebuilt from disk every time the menu
   opens (missing files are hidden; Clear Menu empties it). Opens also feed
@@ -131,8 +148,21 @@ triggers the same re-render manually, confirming first if edits would be lost.
   propagates its scroll, plus a 1px write threshold. Timer/flag guards are
   unsound here — writing `scrollTop` fires the destination's scroll event
   asynchronously and the echo ratchets both panes along.
-- **Zoom** (⌘+/⌘−/⌘0) scales the preview font *and* the column width/padding
-  by the same `--zoom` factor, so characters-per-line stays constant.
+- **Zoom** (⌘+/⌘−/⌘0, also View-menu items) scales the preview font *and* the
+  column width/padding by the same `--zoom` factor, so characters-per-line
+  stays constant.
+- **Table of Contents** (View menu, ⇧⌘T / Ctrl+T): a sidebar rebuilt from the
+  headings on every render; clicking scrolls the preview to the real heading
+  position (in Edit mode: approximated from the heading's character position
+  in the source, since the hidden preview has no geometry). Open/closed state
+  persists in `localStorage("tocOpen")`.
+- **Find** also has a whole-word toggle (`\b` guards added only against
+  word-character needle edges — lookbehind isn't available on the oldest
+  supported WebKit).
+- **Print (⌘P / Ctrl+P)** prints the rendered preview only — `@media print`
+  hides the toolbar/editor/sidebar and un-clamps the page — via the native
+  print dialog (WKWebView `printOperation` / WebView2 `ShowPrintUI`), whose
+  "Save as PDF" is the PDF export path.
 - **Anchor links**: heading ids are generated at render time and fragment
   clicks are intercepted in-page (`scrollIntoView`) — with a `<base href>` set,
   letting the browser navigate `#x` would leave the document.
@@ -150,7 +180,19 @@ never hardcode a color.
 
 One window per file, native tabbing preferred. Only the **first** window uses
 the frame-autosave name (multiple windows sharing one name fight over it and
-stack exactly); later windows cascade down-right.
+stack exactly); later windows cascade down-right. The close button shows the
+standard unsaved-changes dot (`isDocumentEdited`), the title bar carries a
+proxy icon for the open file, and markdown files can be dropped onto any
+window (a `WKWebView` subclass intercepts file drags for markdown extensions;
+everything else falls through to normal web-view drag handling).
+
+## Session restore
+
+A plain launch (no document) reopens the files that were open when the app
+last quit (persisted per change to the open-window set; frozen while quitting
+so teardown doesn't empty it one window at a time). If the session was empty,
+the Open panel shows as before. Launching via a double-clicked file opens
+just that file.
 
 ## AI assistant (removed in 1.2)
 

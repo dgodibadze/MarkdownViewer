@@ -112,6 +112,42 @@ private extension String {
     }
 }
 
+// MARK: - Drag & drop onto the window
+
+/// WKWebView registers itself for drags (text into the textarea), so file
+/// drops must be intercepted here: markdown-ish files open as documents,
+/// anything else falls through to the web view's normal handling.
+final class DropWebView: WKWebView {
+    var onFileDrop: (([URL]) -> Bool)?
+
+    private static let mdExtensions: Set<String> = [
+        "md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "markdn",
+        "mdtxt", "text", "txt", "rmd", "qmd", "mdx", "mdc"]
+
+    private func markdownFileURLs(_ info: NSDraggingInfo) -> [URL]? {
+        let urls = info.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        let mds = urls.filter { Self.mdExtensions.contains($0.pathExtension.lowercased()) }
+        return mds.isEmpty ? nil : mds
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if markdownFileURLs(sender) != nil { return .copy }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if markdownFileURLs(sender) != nil { return .copy }
+        return super.draggingUpdated(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let urls = markdownFileURLs(sender), onFileDrop?(urls) == true { return true }
+        return super.performDragOperation(sender)
+    }
+}
+
 // MARK: - Viewer window
 
 final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WKScriptMessageHandler {
@@ -169,11 +205,20 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         window.minSize = NSSize(width: 420, height: 320)
         super.init(window: window)
 
+        // Title-bar proxy icon: drag it to move/copy the file, ⌘-click for the path.
+        window.representedURL = self.fileURL
+
         let config = WKWebViewConfiguration()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         let ucc = WKUserContentController()
         config.userContentController = ucc
-        webView = WKWebView(frame: window.contentView!.bounds, configuration: config)
+        let dropView = DropWebView(frame: window.contentView!.bounds, configuration: config)
+        dropView.onFileDrop = { urls in
+            guard let delegate = NSApp.delegate as? AppDelegate else { return false }
+            for url in urls { delegate.openFile(url) }
+            return true
+        }
+        webView = dropView
         // Registered after init so `self` is fully available.
         ucc.add(self, name: "bridge")
         webView.autoresizingMask = [.width, .height]
@@ -245,6 +290,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         switch action {
         case "dirty":
             isDirty = (body["dirty"] as? Bool) ?? false
+            window?.isDocumentEdited = isDirty   // dot in the close button
         case "change":
             if let text = body["text"] as? String { lastText = text }
         case "save":
@@ -282,12 +328,24 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         }
     }
 
-    /// First save of an Untitled document: ask where to put it. Defaults to .md
-    /// but `allowsOtherFileTypes` lets the user type any extension.
+    /// File ▸ Save As…: pulls the live editor text, then asks where to write.
+    /// The document then points at the new file (title, watching, recents) —
+    /// the original file keeps whatever was last saved to it.
+    func saveAsDocument() {
+        webView.evaluateJavaScript("window.__getText ? window.__getText() : null") { result, _ in
+            if let text = result as? String { self.lastText = text }
+            self.saveAs(completion: nil)
+        }
+    }
+
+    /// The save panel: first save of an Untitled document, or Save As… for a
+    /// file-backed one (pre-filled with the current name/folder). Defaults to
+    /// .md but `allowsOtherFileTypes` lets the user type any extension.
     private func saveAs(completion: ((Bool) -> Void)?) {
         guard let window = window else { completion?(false); return }
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "Untitled.md"
+        panel.nameFieldStringValue = fileURL?.lastPathComponent ?? "Untitled.md"
+        if let dir = fileURL?.deletingLastPathComponent() { panel.directoryURL = dir }
         if let md = UTType(filenameExtension: "md") { panel.allowedContentTypes = [md] }
         panel.allowsOtherFileTypes = true
         panel.canCreateDirectories = true
@@ -297,6 +355,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
             let ok = self.writeToDisk()
             if ok {
                 self.window?.title = self.displayName
+                self.window?.representedURL = self.fileURL
                 self.startWatching()
                 // Re-render so <base href> points at the real folder (relative
                 // images now resolve) — editor content equals what was saved.
@@ -321,6 +380,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
             // Treat our own write as already-seen so the poll doesn't reload it.
             lastModified = modificationDate()
             isDirty = false
+            window?.isDocumentEdited = false
             webView.evaluateJavaScript("window.__onSaved && window.__onSaved()")
             return true
         } catch {
@@ -357,8 +417,40 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     func reloadFromDisk() {
         guard fileURL != nil else { NSSound.beep(); return }
         isDirty = false
+        window?.isDocumentEdited = false
         renderAndLoad()
     }
+
+    /// File ▸ Print… (⌘P): prints the rendered preview (print CSS in the
+    /// template hides the toolbar/editor). "Save as PDF" in the print panel
+    /// doubles as PDF export.
+    func printDocument() {
+        let info = NSPrintInfo()
+        info.horizontalPagination = .fit
+        info.verticalPagination = .automatic
+        info.isHorizontallyCentered = false
+        info.isVerticallyCentered = false
+        info.topMargin = 28; info.bottomMargin = 28
+        info.leftMargin = 24; info.rightMargin = 24
+        let op = webView.printOperation(with: info)
+        op.showsPrintPanel = true
+        op.showsProgressPanel = true
+        // WKWebView quirk: the print view needs a real frame or the panel
+        // renders blank pages.
+        op.view?.frame = webView.bounds
+        if let window = window {
+            op.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            op.run()
+        }
+    }
+
+    /// View ▸ Table of Contents: toggles the in-page heading sidebar.
+    func toggleTOCInPage() { webView.evaluateJavaScript("window.__toggleTOC && window.__toggleTOC()") }
+
+    func zoomIn() { webView.evaluateJavaScript("window.__zoomIn && window.__zoomIn()") }
+    func zoomOut() { webView.evaluateJavaScript("window.__zoomOut && window.__zoomOut()") }
+    func zoomReset() { webView.evaluateJavaScript("window.__zoomReset && window.__zoomReset()") }
 
     func stop() {
         watchTimer?.invalidate()
@@ -413,9 +505,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = true
         buildMenu()
-        if controllers.isEmpty {
-            // Launched with no document: prompt to open one.
-            DispatchQueue.main.async { [weak self] in self?.openPanel() }
+        // Deferred so a double-clicked document (application(_:open:)) lands
+        // first — in that case neither session restore nor the panel runs.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.controllers.isEmpty else { return }
+            let saved = (UserDefaults.standard.stringArray(forKey: self.sessionKey) ?? [])
+                .filter { FileManager.default.fileExists(atPath: $0) }
+            if saved.isEmpty {
+                self.openPanel()
+            } else {
+                // Reopen last session (don't reshuffle Open Recent doing it).
+                for path in saved { self.openFile(URL(fileURLWithPath: path), noteAsRecent: false) }
+            }
         }
     }
 
@@ -455,6 +556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         if noteAsRecent { noteRecent(resolved) }
+        updateSessionList()
     }
 
     /// File ▸ New: a blank Untitled document opening in Split mode; the first
@@ -471,6 +573,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     /// Called by a controller after an Untitled document is saved for the first time.
     func documentDidGetFile(_ controller: ViewerWindowController) {
         if let url = controller.fileURL { noteRecent(url) }
+        updateSessionList()
+    }
+
+    // MARK: Session restore (reopen last open documents on plain launch)
+
+    private let sessionKey = "sessionFiles"
+    /// Suppresses session-list rewrites while windows close during quit —
+    /// otherwise termination would empty the list one window at a time.
+    private var isTerminating = false
+
+    private func updateSessionList() {
+        guard !isTerminating else { return }
+        let paths = controllers.compactMap { $0.fileURL?.path }
+        UserDefaults.standard.set(paths, forKey: sessionKey)
     }
 
     // MARK: Recent files (persisted in UserDefaults, shown under File ▸ Open Recent)
@@ -567,13 +683,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     /// live text from the page), so termination is deferred until all chosen
     /// saves have hit the disk.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Freeze the session list at its pre-quit state (see updateSessionList).
+        isTerminating = true
         var toSave: [ViewerWindowController] = []
         for controller in controllers where controller.isDirty {
             controller.window?.makeKeyAndOrderFront(nil)
             switch unsavedChangesChoice(for: controller) {
             case .save:    toSave.append(controller)
             case .discard: break
-            case .cancel:  return .terminateCancel
+            case .cancel:  isTerminating = false; return .terminateCancel
             }
         }
         guard !toSave.isEmpty else { return .terminateNow }
@@ -584,7 +702,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 if aborted { return }
                 // A cancelled save panel or failed write aborts the quit —
                 // terminating anyway would throw the unsaved document away.
-                if !ok { aborted = true; NSApp.reply(toApplicationShouldTerminate: false); return }
+                if !ok {
+                    aborted = true
+                    self.isTerminating = false
+                    NSApp.reply(toApplicationShouldTerminate: false)
+                    return
+                }
                 remaining -= 1
                 if remaining == 0 { NSApp.reply(toApplicationShouldTerminate: true) }
             }
@@ -598,6 +721,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             controller.stop()
         }
         controllers.removeAll { $0.window === window }
+        updateSessionList()
     }
 
     /// The controller backing the current key window — falling back to the main
@@ -609,6 +733,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     @objc func saveDocument(_ sender: Any?) { keyController()?.save() }
+    @objc func saveDocumentAs(_ sender: Any?) { keyController()?.saveAsDocument() }
+    @objc func printDocument(_ sender: Any?) { keyController()?.printDocument() }
+    @objc func toggleTOC(_ sender: Any?) { keyController()?.toggleTOCInPage() }
+    @objc func zoomIn(_ sender: Any?) { keyController()?.zoomIn() }
+    @objc func zoomOut(_ sender: Any?) { keyController()?.zoomOut() }
+    @objc func zoomActual(_ sender: Any?) { keyController()?.zoomReset() }
 
     @objc func setPreviewMode(_ sender: Any?) { setMode("preview") }
     @objc func setEditMode(_ sender: Any?) { setMode("edit") }
@@ -725,7 +855,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func makeAboutWindow() -> NSWindow {
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 320),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "About MarkdownViewer"
         w.isReleasedWhenClosed = false
@@ -750,6 +880,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let author = NSTextField(labelWithString: "by David Godibadze")
         author.alignment = .center
 
+        let readmeBtn = NSButton(title: "Read Me", target: self, action: #selector(openReadme(_:)))
+        readmeBtn.bezelStyle = .rounded
         let changelogBtn = NSButton(title: "Changelog", target: self, action: #selector(openChangelog(_:)))
         changelogBtn.bezelStyle = .rounded
         let archBtn = NSButton(title: "Architecture", target: self, action: #selector(openArchitecture(_:)))
@@ -757,7 +889,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let designBtn = NSButton(title: "Design", target: self, action: #selector(openDesign(_:)))
         designBtn.bezelStyle = .rounded
 
-        let buttons = NSStackView(views: [changelogBtn, archBtn, designBtn])
+        let buttons = NSStackView(views: [readmeBtn, changelogBtn, archBtn, designBtn])
         buttons.orientation = .horizontal
         buttons.spacing = 10
 
@@ -777,6 +909,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         return w
     }
 
+    @objc func openReadme(_ sender: Any?) { openBundledDoc("README.md") }
     @objc func openChangelog(_ sender: Any?) { openBundledDoc("CHANGELOG.md") }
     @objc func openArchitecture(_ sender: Any?) { openBundledDoc("ARCHITECTURE.md") }
     @objc func openDesign(_ sender: Any?) { openBundledDoc("DESIGN.md") }
@@ -794,6 +927,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let dst = tmpDir.appendingPathComponent(name)
         try? FileManager.default.removeItem(at: dst)
         do { try FileManager.default.copyItem(at: src, to: dst) } catch { NSSound.beep(); return }
+        // The README references images under docs/ — copy the bundled folder
+        // next to the temp file so those relative paths resolve.
+        if let docsSrc = Bundle.main.resourceURL?.appendingPathComponent("docs"),
+           FileManager.default.fileExists(atPath: docsSrc.path) {
+            let docsDst = tmpDir.appendingPathComponent("docs")
+            try? FileManager.default.removeItem(at: docsDst)
+            try? FileManager.default.copyItem(at: docsSrc, to: docsDst)
+        }
         // Throwaway temp copies don't belong in Open Recent.
         openFile(dst, noteAsRecent: false)
     }
@@ -827,6 +968,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         openRecentItem.submenu = openRecentMenu
         fileMenu.addItem(NSMenuItem.separator())
         fileMenu.addItem(withTitle: "Save", action: #selector(saveDocument(_:)), keyEquivalent: "s")
+        // Capital "S" = ⇧⌘S (shift is implied by the uppercase key equivalent).
+        fileMenu.addItem(withTitle: "Save As…", action: #selector(saveDocumentAs(_:)), keyEquivalent: "S")
+        fileMenu.addItem(NSMenuItem.separator())
+        fileMenu.addItem(withTitle: "Print…", action: #selector(printDocument(_:)), keyEquivalent: "p")
+        fileMenu.addItem(NSMenuItem.separator())
         let closeItem = fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         closeItem.target = nil
         fileMenuItem.submenu = fileMenu
@@ -863,9 +1009,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         viewMenu.addItem(withTitle: "Edit", action: #selector(setEditMode(_:)), keyEquivalent: "2")
         viewMenu.addItem(withTitle: "Split", action: #selector(setSplitMode(_:)), keyEquivalent: "3")
         viewMenu.addItem(NSMenuItem.separator())
+        // Capital "T" = ⇧⌘T (plain ⌘T belongs to native window tabbing).
+        viewMenu.addItem(withTitle: "Table of Contents", action: #selector(toggleTOC(_:)), keyEquivalent: "T")
         let wrapItem = viewMenu.addItem(withTitle: "Wrap Lines", action: #selector(toggleWrap(_:)), keyEquivalent: "")
         wrapItem.state = wrapOn ? .on : .off
         wrapMenuItem = wrapItem
+        viewMenu.addItem(NSMenuItem.separator())
+        // ⌘= shown for Zoom In; the in-page handler also accepts ⌘+ (⇧⌘=).
+        viewMenu.addItem(withTitle: "Zoom In", action: #selector(zoomIn(_:)), keyEquivalent: "=")
+        viewMenu.addItem(withTitle: "Zoom Out", action: #selector(zoomOut(_:)), keyEquivalent: "-")
+        viewMenu.addItem(withTitle: "Actual Size", action: #selector(zoomActual(_:)), keyEquivalent: "0")
         viewMenu.addItem(NSMenuItem.separator())
         viewMenu.addItem(withTitle: "Reload From Disk", action: #selector(reloadFromDisk(_:)), keyEquivalent: "r")
         viewMenuItem.submenu = viewMenu

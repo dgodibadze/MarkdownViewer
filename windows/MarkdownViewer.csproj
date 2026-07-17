@@ -9,7 +9,7 @@
     <RootNamespace>MarkdownViewer</RootNamespace>
     <AssemblyName>MarkdownViewer</AssemblyName>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>1.6.0</Version>
+    <Version>1.8.0</Version>
     <Company>David Godibadze</Company>
     <Product>MarkdownViewer</Product>
     <Copyright>© David Godibadze — GPLv3</Copyright>
@@ -32,9 +32,17 @@
     <Content Include="..\Resources\github-markdown-dark.css" Link="Resources\github-markdown-dark.css" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\Resources\hljs-github-light.css" Link="Resources\hljs-github-light.css" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\Resources\hljs-github-dark.css" Link="Resources\hljs-github-dark.css" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Resources\mermaid.min.js" Link="Resources\mermaid.min.js" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Resources\katex.min.js" Link="Resources\katex.min.js" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Resources\katex.min.css" Link="Resources\katex.min.css" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Resources\katex-auto-render.min.js" Link="Resources\katex-auto-render.min.js" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Resources\fonts\*.woff2" Link="Resources\fonts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\CHANGELOG.md" Link="Resources\CHANGELOG.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\README.md" Link="Resources\README.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\Resources\ARCHITECTURE.md" Link="Resources\ARCHITECTURE.md" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\Resources\DESIGN.md" Link="Resources\DESIGN.md" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\docs\icon.png" Link="Resources\docs\icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\docs\screenshots\*.png" Link="Resources\docs\screenshots\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

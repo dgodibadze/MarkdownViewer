@@ -8,6 +8,7 @@
 Preview, Edit, and Split with live rendering, synced scrolling, and
 find & replace — 100% offline.
 
+![version](https://img.shields.io/badge/version-1.8-blueviolet)
 ![platform](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-blue)
 ![license](https://img.shields.io/badge/license-GPLv3-green)
 ![built with](https://img.shields.io/badge/built%20with-Swift%20%2B%20WebKit%20%C2%B7%20C%23%20%2B%20WebView2-orange)
@@ -27,7 +28,7 @@ find & replace — 100% offline.
   <tr>
     <td align="center"><img src="docs/screenshots/preview-dark.png" alt="Dark theme with syntax-highlighted code"><br><sub><b>Dark theme</b> · highlighted code with copy buttons</sub></td>
     <td align="center"><img src="docs/screenshots/find-replace.png" alt="Find and replace bar with highlighted matches"><br><sub><b>Find &amp; Replace</b> · live match highlights, count &amp; case toggle</sub></td>
-    <td align="center"><img src="docs/screenshots/about.png" alt="About window"><br><sub><b>About</b> · changelog &amp; design docs built in</sub></td>
+    <td align="center"><img src="docs/screenshots/about.png" alt="About window"><br><sub><b>About</b> · read me, changelog &amp; design docs built in</sub></td>
   </tr>
 </table>
 
@@ -38,27 +39,31 @@ find & replace — 100% offline.
 MarkdownViewer gives `.md` files a real home: double-click → a rendered document
 in a native window, with just enough editor to fix a typo, tick a checkbox, and
 save — and nothing else. No Electron, no accounts, no network. One native source
-file per platform driving a system web view, ~700 lines each.
+file per platform driving a system web view, ~1,000 lines each.
 
 ## Features
 
 **Viewing**
 - 📝 **Preview · Edit · Split** (`⌘1/2/3` · `Ctrl+1/2/3`) with a draggable splitter and synced scrolling
 - 🌗 **Light / Dark / System** theme, GitHub-style rendering (marked + highlight.js, bundled)
-- 🔎 **Zoom** (`⌘+/−/0`) that widens the column with the text — no re-wrapping
+- 🧭 **Table of Contents sidebar** (`⇧⌘T` · `Ctrl+T`) — click a heading to jump
+- 🧜 **Mermaid diagrams** (` ```mermaid ` fences) and **KaTeX math** (`$$…$$`, `\(…\)`) — bundled, offline, loaded only when a document uses them
+- 🔎 **Zoom** (`⌘+/−/0`, also in the View menu) that widens the column with the text — no re-wrapping
 - 📋 **Copy buttons** on fenced code blocks; in-document anchor links that work
-- 🔄 **Live reload** when the file changes on disk (paused while you have unsaved edits)
+- 🔄 **Live reload** when the file changes on disk (paused while you have unsaved edits), preserving your scroll position
 
 **Editing**
-- 💾 **Save** (`⌘S` · `Ctrl+S`) with a dirty-dot and Save / Don't Save / Cancel guards on close *and* quit
+- 💾 **Save** (`⌘S` · `Ctrl+S`) with a dirty-dot and Save / Don't Save / Cancel guards on close *and* quit, and **Save As…** (`⇧⌘S` · `Ctrl+Shift+S`) — original line endings (LF/CRLF) are preserved
+- ☑️ **Clickable task checkboxes** — tick `- [ ]` items right in the preview; the edit lands in the source, undo-safe
 - 🆕 **New documents** (`⌘N` · `Ctrl+N`) opening in Split mode; first save defaults to `.md`, any typed extension accepted
-- 🔍 **Find & Replace** (`⌘F`/`⌥⌘F` · `Ctrl+F`/`Ctrl+H`) with match count and case toggle — undo-safe
-- ↩️ **Wrap Lines** toggle; Tab inserts spaces without killing undo
+- 🔍 **Find & Replace** (`⌘F`/`⌥⌘F` · `Ctrl+F`/`Ctrl+H`) with match count, case and whole-word toggles — undo-safe
+- ↩️ **Wrap Lines** toggle; Tab inserts spaces without killing undo; live **word & character count**
 
 **Files**
 - 🗂️ **Tabs** — native window tabs on macOS; one tabbed window on Windows where Explorer-opened files join the running instance
-- 🕘 **Open Recent** (last 10 files) and **Open Path…** (`⇧⌘G`) for pasted paths
-- 🖱️ Drag & drop onto the window
+- 🖨️ **Print / Save as PDF** (`⌘P` · `Ctrl+P`) — prints just the rendered document
+- 🕘 **Open Recent** (last 10 files), **session restore** on plain launch, and **Open Path…** (`⇧⌘G`) for pasted paths
+- 🖱️ Drag & drop onto the window (both platforms)
 
 **Trust**
 - 🔒 **Zero network requests** — everything renders from bundled assets
@@ -133,9 +138,11 @@ See [`windows/README.md`](windows/README.md) for details.
 | Action | macOS | Windows |
 |---|---|---|
 | Preview / Edit / Split | `⌘1` / `⌘2` / `⌘3` | `Ctrl+1` / `Ctrl+2` / `Ctrl+3` |
-| New / Save | `⌘N` / `⌘S` | `Ctrl+N` / `Ctrl+S` |
+| New / Save / Save As | `⌘N` / `⌘S` / `⇧⌘S` | `Ctrl+N` / `Ctrl+S` / `Ctrl+Shift+S` |
 | Find / Find & Replace | `⌘F` / `⌥⌘F` | `Ctrl+F` / `Ctrl+H` |
 | Open / Open Path / Close | `⌘O` / `⇧⌘G` / `⌘W` | `Ctrl+O` / `Ctrl+Shift+G` / `Ctrl+W` |
+| Table of Contents | `⇧⌘T` | `Ctrl+T` |
+| Print / Save as PDF | `⌘P` | `Ctrl+P` |
 | Reload from disk | `⌘R` | `Ctrl+R` or `F5` |
 | Zoom in / out / reset | `⌘+` / `⌘−` / `⌘0` | `Ctrl +` / `Ctrl −` / `Ctrl 0` |
 

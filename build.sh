@@ -27,6 +27,22 @@ fetch "https://cdn.jsdelivr.net/npm/github-markdown-css@5.5.1/github-markdown-da
 fetch "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css"      "hljs-github-light.css"
 fetch "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" "hljs-github-dark.css"
 
+# Mermaid + KaTeX (offline; loaded lazily by the template only when a document
+# actually uses them). KaTeX's CSS references fonts/ relative to itself.
+fetch "https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"                  "mermaid.min.js"
+fetch "https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.js"                     "katex.min.js"
+fetch "https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css"                    "katex.min.css"
+fetch "https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/contrib/auto-render.min.js"       "katex-auto-render.min.js"
+mkdir -p "$RES/fonts"
+for F in KaTeX_AMS-Regular KaTeX_Caligraphic-Bold KaTeX_Caligraphic-Regular \
+         KaTeX_Fraktur-Bold KaTeX_Fraktur-Regular KaTeX_Main-Bold KaTeX_Main-BoldItalic \
+         KaTeX_Main-Italic KaTeX_Main-Regular KaTeX_Math-BoldItalic KaTeX_Math-Italic \
+         KaTeX_SansSerif-Bold KaTeX_SansSerif-Italic KaTeX_SansSerif-Regular \
+         KaTeX_Script-Regular KaTeX_Size1-Regular KaTeX_Size2-Regular KaTeX_Size3-Regular \
+         KaTeX_Size4-Regular KaTeX_Typewriter-Regular; do
+  fetch "https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/fonts/$F.woff2" "fonts/$F.woff2"
+done
+
 echo "==> Compiling Swift (universal: arm64 + x86_64)…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -62,8 +78,15 @@ cp "$RES"/template.html \
    "$RES"/marked.min.js "$RES"/highlight.min.js \
    "$RES"/github-markdown-light.css "$RES"/github-markdown-dark.css \
    "$RES"/hljs-github-light.css "$RES"/hljs-github-dark.css \
-   CHANGELOG.md "$RES"/ARCHITECTURE.md "$RES"/DESIGN.md \
+   "$RES"/mermaid.min.js "$RES"/katex.min.js "$RES"/katex.min.css \
+   "$RES"/katex-auto-render.min.js \
+   CHANGELOG.md README.md "$RES"/ARCHITECTURE.md "$RES"/DESIGN.md \
    "$APP/Contents/Resources/"
+cp -R "$RES/fonts" "$APP/Contents/Resources/fonts"
+# README's images, so the About window's Read Me renders with screenshots.
+mkdir -p "$APP/Contents/Resources/docs/screenshots"
+cp docs/icon.png "$APP/Contents/Resources/docs/"
+cp docs/screenshots/*.png "$APP/Contents/Resources/docs/screenshots/"
 # App icon (optional; ignored if missing)
 [ -f Icon/AppIcon.icns ] && cp Icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns" || true
 

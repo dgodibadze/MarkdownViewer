@@ -306,6 +306,9 @@ sealed class ViewerTab : TabPage
                     if (body.TryGetProperty("text", out var t2)) lastText = t2.GetString() ?? "";
                     Save();
                     break;
+                case "saveAs":
+                    SaveAsCommand();
+                    break;
                 case "setWrap":
                     host.UpdateWrapState(body.TryGetProperty("wrap", out var w) && w.ValueKind == JsonValueKind.True);
                     break;
@@ -323,6 +326,9 @@ sealed class ViewerTab : TabPage
                     break;
                 case "reload":
                     ReloadFromDisk();
+                    break;
+                case "print":
+                    PrintDoc();
                     break;
             }
         }
@@ -366,13 +372,32 @@ sealed class ViewerTab : TabPage
 
     public async void Save() => await SaveAsync();
 
-    /// First save of an Untitled document: ask where to put it. Defaults to .md
-    /// but the "All files" filter lets the user keep any typed extension.
+    /// File ▸ Save As… (Ctrl+Shift+S): pulls the live editor text, then asks
+    /// where to write. The tab then points at the new file (title, watching,
+    /// recents) — the original file keeps whatever was last saved to it.
+    public async Task<bool> SaveAsAsync()
+    {
+        try
+        {
+            var r = await web.CoreWebView2.ExecuteScriptAsync("window.__getText ? window.__getText() : null");
+            if (!string.IsNullOrEmpty(r) && r != "null")
+                lastText = JsonSerializer.Deserialize<string>(r) ?? lastText;
+        }
+        catch { /* fall back to the cached copy */ }
+        return SaveAs();
+    }
+
+    public async void SaveAsCommand() => await SaveAsAsync();
+
+    /// The save dialog: first save of an Untitled document, or Save As… for a
+    /// file-backed one (pre-filled with the current name/folder). Defaults to
+    /// .md but the "All files" filter lets the user keep any typed extension.
     bool SaveAs()
     {
         using var dlg = new SaveFileDialog
         {
-            FileName = "Untitled.md",
+            FileName = FilePath != null ? Path.GetFileName(FilePath) : "Untitled.md",
+            InitialDirectory = FilePath != null ? Path.GetDirectoryName(FilePath) ?? "" : "",
             Filter = "Markdown (*.md)|*.md|All files (*.*)|*.*",
             DefaultExt = "md",
             AddExtension = true,
@@ -388,6 +413,7 @@ sealed class ViewerTab : TabPage
         // now resolve) — editor content equals what was saved.
         RenderAndLoad();
         host.NoteRecent(FilePath);
+        host.SaveSession();
         return true;
     }
 
@@ -445,6 +471,18 @@ sealed class ViewerTab : TabPage
     public void ToggleWrapInPage() => RunJS("window.__toggleWrap && window.__toggleWrap()");
     public void FindInPage() { FocusWeb(); RunJS("window.__find && window.__find()"); }
     public void FindReplaceInPage() { FocusWeb(); RunJS("window.__findReplace && window.__findReplace()"); }
+    public void ToggleTOCInPage() => RunJS("window.__toggleTOC && window.__toggleTOC()");
+    public void ZoomIn() => RunJS("window.__zoomIn && window.__zoomIn()");
+    public void ZoomOut() => RunJS("window.__zoomOut && window.__zoomOut()");
+    public void ZoomReset() => RunJS("window.__zoomReset && window.__zoomReset()");
+
+    /// File ▸ Print… (Ctrl+P): the browser print dialog on the rendered
+    /// preview (print CSS hides the toolbar/editor); "Save as PDF" there
+    /// doubles as PDF export.
+    public void PrintDoc()
+    {
+        try { web.CoreWebView2?.ShowPrintUI(CoreWebView2PrintDialogKind.Browser); } catch { }
+    }
 
     public void Stop()
     {
@@ -510,6 +548,15 @@ sealed class MainForm : Form
             var opened = false;
             foreach (var a in args)
                 if (File.Exists(a)) { await OpenFileAsync(a); opened = true; }
+            if (!opened)
+            {
+                // Reopen last session (don't reshuffle Open Recent doing it).
+                foreach (var p in ReadSession().Where(File.Exists))
+                {
+                    await OpenFileAsync(p, noteAsRecent: false);
+                    opened = true;
+                }
+            }
             if (!opened) ShowOpenDialog();
         };
 
@@ -583,7 +630,29 @@ sealed class MainForm : Form
         UpdateEmptyState();
         UpdateTitle();
         if (noteAsRecent) NoteRecent(full);
+        SaveSession();
         await tab.Init();
+    }
+
+    // MARK: Session restore (reopen last open documents on plain launch)
+
+    const string SessionKey = "sessionFiles";
+    /// Suppresses session rewrites while tabs close during app exit —
+    /// otherwise closing would empty the list one tab at a time.
+    bool isExiting;
+
+    List<string> ReadSession()
+    {
+        try { return JsonSerializer.Deserialize<List<string>>(Settings.Get(SessionKey) ?? "[]") ?? new List<string>(); }
+        catch { return new List<string>(); }
+    }
+
+    public void SaveSession()
+    {
+        if (isExiting) return;
+        var list = tabs.TabPages.Cast<ViewerTab>()
+            .Where(t => t.FilePath != null).Select(t => t.FilePath).ToList();
+        Settings.Set(SessionKey, JsonSerializer.Serialize(list));
     }
 
     /// File ▸ New: a blank Untitled document opening in Split mode; the first
@@ -657,6 +726,7 @@ sealed class MainForm : Form
         tab.Dispose();
         UpdateEmptyState();
         UpdateTitle();
+        SaveSession();
         return true;
     }
 
@@ -664,6 +734,9 @@ sealed class MainForm : Form
 
     void OnFormClosing(object sender, FormClosingEventArgs e)
     {
+        // Snapshot the session before any tab teardown, then freeze it.
+        SaveSession();
+        isExiting = true;
         if (!forceClose)
         {
             var dirty = tabs.TabPages.Cast<ViewerTab>().Where(t => t.IsDirty).ToArray();
@@ -687,8 +760,9 @@ sealed class MainForm : Form
             var r = MessageBox.Show(
                 $"Do you want to save the changes you made to “{tab.DisplayName}”?\n\nYour changes will be lost if you don't save them.",
                 "Unsaved Changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-            if (r == DialogResult.Cancel) return;
-            if (r == DialogResult.Yes && !await tab.SaveAsync()) return;
+            // Aborting the exit un-freezes session tracking (see OnFormClosing).
+            if (r == DialogResult.Cancel) { isExiting = false; return; }
+            if (r == DialogResult.Yes && !await tab.SaveAsync()) { isExiting = false; return; }
         }
         forceClose = true;
         Close();
@@ -777,7 +851,21 @@ sealed class MainForm : Form
         var dst = Path.Combine(tmpDir, name);
         try { File.Copy(src, dst, true); }
         catch { System.Media.SystemSounds.Beep.Play(); return; }
+        // The README references images under docs/ — copy the bundled folder
+        // next to the temp file so those relative paths resolve.
+        var docsSrc = Path.Combine(Renderer.ResourcesDir, "docs");
+        if (Directory.Exists(docsSrc))
+            try { CopyDirectory(docsSrc, Path.Combine(tmpDir, "docs")); } catch { }
         _ = OpenFileAsync(dst, noteAsRecent: false);
+    }
+
+    static void CopyDirectory(string src, string dst)
+    {
+        Directory.CreateDirectory(dst);
+        foreach (var f in Directory.GetFiles(src))
+            File.Copy(f, Path.Combine(dst, Path.GetFileName(f)), true);
+        foreach (var d in Directory.GetDirectories(src))
+            CopyDirectory(d, Path.Combine(dst, Path.GetFileName(d)));
     }
 
     // MARK: Menu
@@ -797,6 +885,9 @@ sealed class MainForm : Form
         file.DropDownItems.Add(openRecent);
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(Item("Save", Keys.Control | Keys.S, (_, __) => Current?.Save()));
+        file.DropDownItems.Add(Item("Save As…", Keys.Control | Keys.Shift | Keys.S, (_, __) => Current?.SaveAsCommand()));
+        file.DropDownItems.Add(new ToolStripSeparator());
+        file.DropDownItems.Add(Item("Print…", Keys.Control | Keys.P, (_, __) => Current?.PrintDoc()));
         file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(Item("Close Tab", Keys.Control | Keys.W, (_, __) => CloseTab(Current)));
         file.DropDownItems.Add(Item("Exit", Keys.Alt | Keys.F4, (_, __) => Close()));
@@ -812,9 +903,14 @@ sealed class MainForm : Form
         view.DropDownItems.Add(Item("Edit", Keys.Control | Keys.D2, (_, __) => Current?.SetEditorMode("edit")));
         view.DropDownItems.Add(Item("Split", Keys.Control | Keys.D3, (_, __) => Current?.SetEditorMode("split")));
         view.DropDownItems.Add(new ToolStripSeparator());
+        view.DropDownItems.Add(Item("Table of Contents", Keys.Control | Keys.T, (_, __) => Current?.ToggleTOCInPage()));
         wrapMenuItem = Item("Wrap Lines", Keys.None, (_, __) => Current?.ToggleWrapInPage());
         wrapMenuItem.Checked = true;
         view.DropDownItems.Add(wrapMenuItem);
+        view.DropDownItems.Add(new ToolStripSeparator());
+        view.DropDownItems.Add(Item("Zoom In", Keys.Control | Keys.Oemplus, (_, __) => Current?.ZoomIn()));
+        view.DropDownItems.Add(Item("Zoom Out", Keys.Control | Keys.OemMinus, (_, __) => Current?.ZoomOut()));
+        view.DropDownItems.Add(Item("Actual Size", Keys.Control | Keys.D0, (_, __) => Current?.ZoomReset()));
         view.DropDownItems.Add(new ToolStripSeparator());
         view.DropDownItems.Add(Item("Reload From Disk", Keys.Control | Keys.R, (_, __) => Current?.ReloadFromDisk()));
 
@@ -845,14 +941,14 @@ sealed class AboutForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = false; MaximizeBox = false; ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterParent;
-        ClientSize = new Size(380, 300);
+        ClientSize = new Size(500, 300);
 
         var version = Application.ProductVersion.Split('+')[0];
 
         var icon = new PictureBox
         {
             Size = new Size(84, 84),
-            Location = new Point((380 - 84) / 2, 24),
+            Location = new Point((500 - 84) / 2, 24),
             SizeMode = PictureBoxSizeMode.Zoom,
         };
         try { icon.Image = Icon.ExtractAssociatedIcon(Application.ExecutablePath)?.ToBitmap(); } catch { }
@@ -862,30 +958,32 @@ sealed class AboutForm : Form
             Text = "MarkdownViewer",
             Font = new Font("Segoe UI", 14, FontStyle.Bold),
             TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(0, 116), Size = new Size(380, 28),
+            Location = new Point(0, 116), Size = new Size(500, 28),
         };
         var ver = new Label
         {
             Text = "Version " + version,
             ForeColor = Color.Gray,
             TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(0, 146), Size = new Size(380, 20),
+            Location = new Point(0, 146), Size = new Size(500, 20),
         };
         var author = new Label
         {
             Text = "by David Godibadze",
             TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(0, 168), Size = new Size(380, 20),
+            Location = new Point(0, 168), Size = new Size(500, 20),
         };
 
-        var changelog = new Button { Text = "Changelog", Location = new Point(22, 216), Width = 105 };
+        var readme = new Button { Text = "Read Me", Location = new Point(20, 216), Width = 110 };
+        readme.Click += (_, __) => { host.OpenBundledDoc("README.md"); Close(); };
+        var changelog = new Button { Text = "Changelog", Location = new Point(140, 216), Width = 110 };
         changelog.Click += (_, __) => { host.OpenBundledDoc("CHANGELOG.md"); Close(); };
-        var arch = new Button { Text = "Architecture", Location = new Point(137, 216), Width = 105 };
+        var arch = new Button { Text = "Architecture", Location = new Point(260, 216), Width = 110 };
         arch.Click += (_, __) => { host.OpenBundledDoc("ARCHITECTURE.md"); Close(); };
-        var design = new Button { Text = "Design", Location = new Point(252, 216), Width = 105 };
+        var design = new Button { Text = "Design", Location = new Point(380, 216), Width = 110 };
         design.Click += (_, __) => { host.OpenBundledDoc("DESIGN.md"); Close(); };
 
-        Controls.AddRange(new Control[] { icon, name, ver, author, changelog, arch, design });
+        Controls.AddRange(new Control[] { icon, name, ver, author, readme, changelog, arch, design });
     }
 }
 

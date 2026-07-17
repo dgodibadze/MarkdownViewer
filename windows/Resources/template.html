@@ -33,6 +33,8 @@
 <link rel="stylesheet" id="md-dark"    href="__RES__/github-markdown-dark.css">
 <link rel="stylesheet" id="hljs-light" href="__RES__/hljs-github-light.css">
 <link rel="stylesheet" id="hljs-dark"  href="__RES__/hljs-github-dark.css">
+<!-- KaTeX styles (fonts referenced relative to the CSS load lazily on use). -->
+<link rel="stylesheet" id="katex-css"  href="__RES__/katex.min.css">
 
 <style>
   :root[data-theme="light"] {
@@ -87,6 +89,27 @@
 
   /* ---- Stage: holds the editor/preview workspace ---- */
   .stage { flex: 1 1 auto; display: flex; min-height: 0; min-width: 0; }
+
+  /* ---- Table of Contents sidebar (View menu / shortcut toggles it) ---- */
+  .toc {
+    flex: 0 0 230px; display: none; overflow: auto; min-height: 0;
+    border-right: 1px solid var(--border); background: var(--surface);
+    padding: 10px 6px; font-size: 13px;
+  }
+  body[data-toc="on"] .toc { display: block; }
+  .toc-item {
+    display: block; padding: 3px 8px; border-radius: 6px; cursor: pointer;
+    color: var(--text); text-decoration: none;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .toc-item:hover { background: var(--bg); color: var(--accent); }
+  .toc-item.lvl2 { padding-left: 20px; }
+  .toc-item.lvl3 { padding-left: 32px; }
+  .toc-item.lvl4, .toc-item.lvl5, .toc-item.lvl6 { padding-left: 44px; }
+  .toc-empty { color: var(--muted); padding: 3px 8px; }
+
+  /* ---- Word/character count in the toolbar ---- */
+  .count { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
 
   /* ---- Workspace (editor / preview panes) ---- */
   .workspace { flex: 1 1 auto; display: grid; min-height: 0; min-width: 0; position: relative; }
@@ -236,6 +259,16 @@
   :root { --zoom: 1; }
   .markdown-body { font-size: calc(16px * var(--zoom)); }
   .editor, .editor-backdrop { font-size: calc(13.5px * var(--zoom)); }
+
+  /* ---- Print / Save-as-PDF: only the rendered document, at full width ---- */
+  @media print {
+    html, body { height: auto; overflow: visible; }
+    .toolbar, .toc, .editor, .editor-backdrop, .gutter, .findbar { display: none !important; }
+    .stage, .workspace { display: block; overflow: visible; min-height: auto; }
+    .preview { display: block !important; overflow: visible; height: auto; }
+    .page { max-width: none; padding: 0; }
+    .copy-btn { display: none !important; }
+  }
 </style>
 </head>
 <body data-mode="preview" data-dirty="false">
@@ -248,6 +281,8 @@
   </div>
 
   <div class="spacer"></div>
+
+  <span class="count" id="wordCount" aria-label="Word count"></span>
 
   <button class="save-btn" id="saveBtn">
     <span class="dirty-dot" aria-hidden="true"></span>
@@ -267,6 +302,7 @@
 </div>
 
 <div class="stage">
+  <nav class="toc" id="toc" aria-label="Table of contents"></nav>
   <div class="workspace">
     <div class="editor-backdrop" id="editorBackdrop" aria-hidden="true"></div>
     <textarea class="editor" id="editor" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
@@ -280,6 +316,7 @@
       <button id="findPrev" title="Previous (Shift+Enter)" aria-label="Previous match">↑</button>
       <button id="findNext" title="Next (Enter)" aria-label="Next match">↓</button>
       <button id="findCase" title="Match case" aria-pressed="false" aria-label="Match case">Aa</button>
+      <button id="findWord" title="Whole word" aria-pressed="false" aria-label="Whole word">|ab|</button>
       <input type="text" id="replaceInput" class="replace-only" placeholder="Replace" aria-label="Replace">
       <button id="replaceOne" class="replace-only">Replace</button>
       <button id="replaceAll" class="replace-only">All</button>
@@ -302,6 +339,26 @@ const MD = __MARKDOWN__;
   var saveBtn = document.getElementById('saveBtn');
 
   editor.value = MD;
+
+  // Bundled-assets dir, for scripts loaded lazily (mermaid, KaTeX). The CSP
+  // permits file: scripts, so injected <script src> from here is allowed.
+  var RES_DIR = '__RES__';
+  var loadedScripts = {};
+  function loadScript(src, cb) {
+    if (loadedScripts[src] === true) { cb(true); return; }
+    if (Array.isArray(loadedScripts[src])) { loadedScripts[src].push(cb); return; }
+    loadedScripts[src] = [cb];
+    var s = document.createElement('script');
+    s.src = src;
+    function done(ok) {
+      var cbs = loadedScripts[src];
+      loadedScripts[src] = ok ? true : undefined;
+      cbs.forEach(function (f) { f(ok); });
+    }
+    s.onload = function () { done(true); };
+    s.onerror = function () { done(false); };
+    document.head.appendChild(s);
+  }
 
   // ---- Native bridge: WebView2 (chrome.webview) first, WKWebView as fallback
   // so the template stays portable between the Windows and macOS apps. ----
@@ -327,6 +384,7 @@ const MD = __MARKDOWN__;
     } else {
       content.textContent = text;
     }
+    upgradeMermaid(content);          // before hljs: replaces mermaid <pre>s
     if (window.hljs) {
       content.querySelectorAll('pre code').forEach(function (b) {
         try { hljs.highlightElement(b); } catch (e) {}
@@ -334,6 +392,142 @@ const MD = __MARKDOWN__;
     }
     addHeadingIds(content);
     addCopyButtons(content);
+    renderMath(text);
+    wireTaskCheckboxes(content);
+    buildTOC(content);
+    updateCount(text);
+  }
+
+  // ---- Mermaid diagrams (```mermaid fences; mermaid.min.js loads on first use)
+  function upgradeMermaid(root) {
+    var blocks = root.querySelectorAll('pre code.language-mermaid');
+    if (!blocks.length) return;
+    blocks.forEach(function (code) {
+      var div = document.createElement('div');
+      div.className = 'mermaid';
+      div.textContent = code.textContent;
+      var pre = code.parentElement;
+      pre.parentNode.replaceChild(div, pre);
+    });
+    loadScript(RES_DIR + '/mermaid.min.js', function (ok) {
+      if (!ok || !window.mermaid) return;
+      try {
+        mermaid.initialize({
+          startOnLoad: false, securityLevel: 'strict',
+          theme: document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default'
+        });
+        mermaid.run({ nodes: content.querySelectorAll('.mermaid') });
+      } catch (e) {}
+    });
+  }
+
+  // ---- Math ($$…$$, \(…\), \[…\]; KaTeX loads on first use) ----
+  // Limitation: marked processes the text first, so markdown-significant
+  // characters inside math (e.g. a_b … c_d on one line) can be transformed
+  // before KaTeX sees them. Prefer \( \) / $$ on their own lines.
+  function renderMath(text) {
+    if (!/\$\$|\\\(|\\\[/.test(text)) return;
+    loadScript(RES_DIR + '/katex.min.js', function (ok) {
+      if (!ok) return;
+      loadScript(RES_DIR + '/katex-auto-render.min.js', function (ok2) {
+        if (!ok2 || !window.renderMathInElement) return;
+        try {
+          renderMathInElement(content, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '\\(', right: '\\)', display: false },
+              { left: '\\[', right: '\\]', display: true }
+            ],
+            throwOnError: false
+          });
+        } catch (e) {}
+      });
+    });
+  }
+
+  // ---- Clickable task checkboxes (write [ ]/[x] back into the source) ----
+  // The Nth checkbox in the preview maps to the Nth task marker in the
+  // markdown. If the counts disagree (raw-HTML inputs, task syntax inside a
+  // code fence), leave everything disabled rather than guess.
+  var TASK_RE = /^([ \t>]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])(\])/gm;
+  function taskPositions(text) {
+    var pos = [], m;
+    TASK_RE.lastIndex = 0;
+    while ((m = TASK_RE.exec(text)) !== null) pos.push(m.index + m[1].length);
+    return pos;
+  }
+  function wireTaskCheckboxes(root) {
+    var boxes = Array.prototype.slice.call(root.querySelectorAll('li input[type="checkbox"]'));
+    if (!boxes.length) return;
+    if (taskPositions(editor.value).length !== boxes.length) return;
+    boxes.forEach(function (box, i) {
+      box.disabled = false;
+      box.addEventListener('change', function () {
+        // Recompute at click time — the source may have changed since render.
+        var pos = taskPositions(editor.value);
+        if (pos.length !== boxes.length) { render(); return; }
+        var p = pos[i];
+        var cur = editor.value.charAt(p);
+        spliceEditor(p, p + 1, cur === ' ' ? 'x' : ' ');
+      });
+    });
+  }
+
+  // ---- Table of contents sidebar ----
+  var tocEl = document.getElementById('toc');
+  function buildTOC(root) {
+    tocEl.textContent = '';
+    var hs = root.querySelectorAll('h1,h2,h3,h4,h5,h6');
+    if (!hs.length) {
+      var empty = document.createElement('div');
+      empty.className = 'toc-empty';
+      empty.textContent = 'No headings';
+      tocEl.appendChild(empty);
+      return;
+    }
+    hs.forEach(function (h) {
+      var a = document.createElement('a');
+      a.className = 'toc-item lvl' + h.tagName.charAt(1);
+      a.textContent = h.textContent;
+      a.title = h.textContent;
+      a.dataset.target = h.id;
+      tocEl.appendChild(a);
+    });
+  }
+  tocEl.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('.toc-item') : null;
+    if (!a) return;
+    var el = document.getElementById(a.dataset.target);
+    if (!el) return;
+    if (body.getAttribute('data-mode') === 'edit') {
+      // Preview is hidden (no geometry) — approximate by the heading's
+      // character position in the source.
+      var t = editor.value, hp = [], re = /^[ \t>]{0,8}#{1,6}[ \t]+.*$/gm, m;
+      while ((m = re.exec(t)) !== null) hp.push(m.index);
+      var hsAll = Array.prototype.slice.call(content.querySelectorAll('h1,h2,h3,h4,h5,h6'));
+      var i = hsAll.indexOf(el);
+      var ratio = (hp.length === hsAll.length && i >= 0 && t.length > 0)
+        ? hp[i] / t.length
+        : (i >= 0 && hsAll.length > 0 ? i / hsAll.length : 0);
+      editor.scrollTop = ratio * Math.max(0, editor.scrollHeight - editor.clientHeight);
+    } else {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+  function applyTOC(on) {
+    body.setAttribute('data-toc', on ? 'on' : 'off');
+    try { localStorage.setItem('tocOpen', on ? '1' : '0'); } catch (e) {}
+  }
+  window.__toggleTOC = function () {
+    applyTOC(body.getAttribute('data-toc') !== 'on');
+  };
+  try { applyTOC(localStorage.getItem('tocOpen') === '1'); } catch (e) { applyTOC(false); }
+
+  // ---- Word / character count (toolbar) ----
+  var countEl2 = document.getElementById('wordCount');
+  function updateCount(text) {
+    var words = (text.match(/\S+/g) || []).length;
+    countEl2.textContent = words.toLocaleString() + ' words · ' + text.length.toLocaleString() + ' chars';
   }
 
   // ---- Sanitize rendered HTML ----
@@ -513,9 +707,10 @@ const MD = __MARKDOWN__;
 
   saveBtn.addEventListener('click', save);
 
-  // Ctrl+S saves.
+  // Ctrl+S saves. Shift excluded: Ctrl+Shift+S is Save As, routed to the
+  // native side by the in-page shortcut block below.
   document.addEventListener('keydown', function (e) {
-    if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
       save();
     }
@@ -532,13 +727,16 @@ const MD = __MARKDOWN__;
     if (k === '1') { e.preventDefault(); setMode('preview'); }
     else if (k === '2') { e.preventDefault(); setMode('edit'); }
     else if (k === '3') { e.preventDefault(); setMode('split'); }
+    else if (k === 's' && e.shiftKey) { e.preventDefault(); bridge({ action: 'saveAs' }); }
     else if (k === 'n' && !e.shiftKey) { e.preventDefault(); bridge({ action: 'newFile' }); }
     else if (k === 'o' && !e.shiftKey) { e.preventDefault(); bridge({ action: 'open' }); }
     else if (k === 'g' && e.shiftKey) { e.preventDefault(); bridge({ action: 'openPath' }); }
     else if (k === 'w') { e.preventDefault(); bridge({ action: 'closeTab' }); }
     else if (k === 'r') { e.preventDefault(); bridge({ action: 'reload' }); }
     else if (k === 'h') { e.preventDefault(); window.__findReplace(); }
-    else if (k === 'p' || k === 'j' || k === 'u') { e.preventDefault(); }   // print / downloads / view-source
+    else if (k === 't') { e.preventDefault(); window.__toggleTOC && window.__toggleTOC(); }
+    else if (k === 'p') { e.preventDefault(); bridge({ action: 'print' }); }
+    else if (k === 'j' || k === 'u') { e.preventDefault(); }   // downloads / view-source
   });
 
   // ---- Synced scrolling (Split mode) + preview scroll persistence ----
@@ -636,6 +834,7 @@ const MD = __MARKDOWN__;
     var matches = [];      // start indices of each match
     var current = -1;      // index into `matches`
     var caseSensitive = false;
+    var wholeWord = false;
 
     function findAll(hay, needle) {
       // Regex on the ORIGINAL string: lowercasing the haystack for comparison
@@ -643,7 +842,15 @@ const MD = __MARKDOWN__;
       // (e.g. Turkish İ), which would corrupt Replace.
       var res = [];
       if (!needle) return res;
-      var re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), caseSensitive ? 'g' : 'gi');
+      var src = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (wholeWord) {
+        // \b only makes sense against word characters; a needle like "->"
+        // gets no boundary on that side (lookbehind isn't available on the
+        // oldest supported WebKit).
+        if (/^\w/.test(needle)) src = '\\b' + src;
+        if (/\w$/.test(needle)) src = src + '\\b';
+      }
+      var re = new RegExp(src, caseSensitive ? 'g' : 'gi');
       var m;
       while ((m = re.exec(hay)) !== null) {
         res.push(m.index);
@@ -798,6 +1005,12 @@ const MD = __MARKDOWN__;
       caseBtn.setAttribute('aria-pressed', String(caseSensitive));
       recompute(false); selectCurrent();
     });
+    var wordBtn = document.getElementById('findWord');
+    wordBtn.addEventListener('click', function () {
+      wholeWord = !wholeWord;
+      wordBtn.setAttribute('aria-pressed', String(wholeWord));
+      recompute(false); selectCurrent();
+    });
 
     // Keyboard shortcuts (work even when the web view has focus). Escape
     // closes the bar from anywhere — not just from inside the find fields.
@@ -842,6 +1055,9 @@ const MD = __MARKDOWN__;
       btn.title = label;
       btn.setAttribute('aria-label', label);
       try { localStorage.setItem('theme', choice); } catch (e) {}
+      // Mermaid bakes the theme into its SVG output — re-render diagrams so
+      // they follow a light/dark switch. (No-op when none are on the page.)
+      if (content.querySelector('.mermaid')) render();
     }
 
     btn.addEventListener('click', function () {
@@ -865,6 +1081,11 @@ const MD = __MARKDOWN__;
       try { localStorage.setItem(KEY, String(v)); } catch (e) {}
     }
     function bump(d) { apply(clamp(get() + d)); }
+    // Exposed for the native View menu items (the keyboard shortcuts below
+    // keep working when no menu intercepts them).
+    window.__zoomIn = function () { bump(STEP); };
+    window.__zoomOut = function () { bump(-STEP); };
+    window.__zoomReset = function () { apply(1); };
     document.addEventListener('keydown', function (e) {
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.key === '+' || e.key === '=') { e.preventDefault(); bump(STEP); }

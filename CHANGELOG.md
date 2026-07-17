@@ -5,6 +5,56 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [1.8] — 2026-07-16
+
+### Added
+
+- **Print / Save as PDF (⌘P / Ctrl+P).** Prints only the rendered document —
+  print CSS hides the toolbar, editor, and sidebar. The system print dialog's
+  "Save as PDF" doubles as PDF export.
+- **Table of Contents sidebar (View menu, ⇧⌘T / Ctrl+T).** A toggleable
+  heading outline; click to jump. Uses the preview's real positions (in Edit
+  mode it approximates from the heading's place in the source). State persists.
+- **Clickable task checkboxes.** `- [ ]` items rendered in the preview are now
+  live: clicking one writes `[x]`/`[ ]` back into the markdown source as a
+  normal undoable edit and marks the document dirty. If the preview's
+  checkboxes can't be matched 1:1 to source markers (e.g. task syntax inside a
+  code fence, raw-HTML inputs), they stay read-only rather than guess.
+- **Mermaid diagrams and KaTeX math, fully offline.** ` ```mermaid ` fences
+  render as diagrams (theme-aware); `$$…$$`, `\(…\)`, `\[…\]` render as math.
+  Both libraries are bundled (pinned versions, fetched by build.sh) and load
+  lazily — documents that don't use them pay nothing. Known limitation:
+  markdown formatting is applied before KaTeX sees the text, so underscores
+  inside inline math can be eaten — prefer `\(…\)` or display `$$` blocks.
+- **Word & character count** in the toolbar, live while editing.
+- **Zoom menu items** (View ▸ Zoom In / Zoom Out / Actual Size) — the
+  keyboard shortcuts existed but were undiscoverable.
+- **Whole-word toggle in the find bar** (next to match-case).
+- **Session restore.** Launching the app plain (no file) reopens the documents
+  that were open last time; if there were none, the Open panel shows as
+  before. Launching by double-clicking a file just opens that file.
+- **macOS window polish:** the close button now shows the standard unsaved-dot
+  (`isDocumentEdited`), the title bar gets a proxy icon for the open file
+  (⌘-click it for the path, drag it to copy the file), and markdown files can
+  be dropped directly onto a window — not just the Dock icon.
+- **Read Me in the About window.** The project README (with its screenshots)
+  is bundled and opens from a new About button, alongside Changelog /
+  Architecture / Design.
+- Docs refreshed to match reality: README carries a version badge and the full
+  feature list; ARCHITECTURE.md covers the current asset set, bridge actions,
+  and the two-shells-one-template design (it still claimed "macOS-only").
+
+## [1.7] — 2026-07-16
+
+### Added
+
+- **File ▸ Save As… (⇧⌘S / Ctrl+Shift+S)** on both platforms. Saves the live
+  editor text to a new location — the panel/dialog pre-fills the current name
+  and folder — and the window/tab then follows the new file (title, live
+  reload, Open Recent). The original file keeps whatever was last saved to it.
+  Plain ⌘S/Ctrl+S is unchanged; the in-page save shortcut now ignores
+  Shift so the Save As shortcut reaches its own handler.
+
 ## [1.6] — 2026-07-16
 
 ### Fixed

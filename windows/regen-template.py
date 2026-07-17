@@ -73,16 +73,18 @@ sub("""  // ---- Swift bridge (no-ops gracefully if not present) ----
   }""")
 
 # ---- In-page app shortcuts (WinForms accelerators can be swallowed) ---------
-sub("""  // Cmd/Ctrl+S saves.
+sub("""  // Cmd/Ctrl+S saves. Shift excluded: ⇧⌘S / Ctrl+Shift+S is Save As, which
+  // is handled natively (macOS menu) or by the in-page shortcut block (Windows).
   document.addEventListener('keydown', function (e) {
-    if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
       save();
     }
   });""",
-    """  // Ctrl+S saves.
+    """  // Ctrl+S saves. Shift excluded: Ctrl+Shift+S is Save As, routed to the
+  // native side by the in-page shortcut block below.
   document.addEventListener('keydown', function (e) {
-    if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 's' || e.key === 'S')) {
       e.preventDefault();
       save();
     }
@@ -99,13 +101,16 @@ sub("""  // Cmd/Ctrl+S saves.
     if (k === '1') { e.preventDefault(); setMode('preview'); }
     else if (k === '2') { e.preventDefault(); setMode('edit'); }
     else if (k === '3') { e.preventDefault(); setMode('split'); }
+    else if (k === 's' && e.shiftKey) { e.preventDefault(); bridge({ action: 'saveAs' }); }
     else if (k === 'n' && !e.shiftKey) { e.preventDefault(); bridge({ action: 'newFile' }); }
     else if (k === 'o' && !e.shiftKey) { e.preventDefault(); bridge({ action: 'open' }); }
     else if (k === 'g' && e.shiftKey) { e.preventDefault(); bridge({ action: 'openPath' }); }
     else if (k === 'w') { e.preventDefault(); bridge({ action: 'closeTab' }); }
     else if (k === 'r') { e.preventDefault(); bridge({ action: 'reload' }); }
     else if (k === 'h') { e.preventDefault(); window.__findReplace(); }
-    else if (k === 'p' || k === 'j' || k === 'u') { e.preventDefault(); }   // print / downloads / view-source
+    else if (k === 't') { e.preventDefault(); window.__toggleTOC && window.__toggleTOC(); }
+    else if (k === 'p') { e.preventDefault(); bridge({ action: 'print' }); }
+    else if (k === 'j' || k === 'u') { e.preventDefault(); }   // downloads / view-source
   });""")
 
 # ---- __escape hook (Escape never reaches the page in WinForms) --------------

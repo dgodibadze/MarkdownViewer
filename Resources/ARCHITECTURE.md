@@ -11,14 +11,18 @@ compiles with `swiftc` (universal: arm64 + x86_64, macOS 11+) and assembles the
 MarkdownViewer/
 ├─ Sources/main.swift        # the whole native macOS app (AppKit + WebKit)
 ├─ CHANGELOG.md              # canonical changelog (copied into both bundles)
+├─ README.md                 # project README (bundled; shown by the About window)
 ├─ Resources/
 │  ├─ template.html          # render shell + all in-page UI and logic (incl. CSP)
 │  ├─ marked.min.js          # markdown → HTML (MIT)
 │  ├─ highlight.min.js       # code syntax highlighting (BSD-3)
+│  ├─ mermaid.min.js         # diagrams (MIT) — loaded lazily on first use
+│  ├─ katex.min.js|css, katex-auto-render.min.js, fonts/  # math (MIT), lazy
 │  ├─ github-markdown-*.css  # GitHub markdown styling (MIT)
 │  ├─ hljs-github-*.css      # highlight.js themes
 │  ├─ ARCHITECTURE.md        # this file, shown by the About window
 │  └─ DESIGN.md              # behavioral design doc, shown by the About window
+├─ docs/                     # icon + screenshots (bundled so the in-app README renders)
 ├─ windows/                  # native Windows port (C# + WinForms + WebView2)
 │  ├─ Program.cs             # the whole Windows app — mirrors main.swift
 │  └─ Resources/template.html# regenerated from ../Resources/template.html
@@ -37,9 +41,12 @@ MarkdownViewer/
    `loadFileURL(allowingReadAccessTo:"/")` so bundled assets and local images both resolve.
 3. In the page, `marked.parse()` renders the markdown, heading ids are generated,
    the output is sanitized (inline event handlers and script-scheme URLs stripped),
-   and `highlight.js` colorizes code. A Content-Security-Policy blocks remote
-   scripts and all network connections from the page. The editor's `<textarea>` is
-   the source of truth; the preview re-renders from it.
+   and `highlight.js` colorizes code. Mermaid diagrams and KaTeX math render from
+   bundled libraries that are injected only when a document uses them. A
+   Content-Security-Policy blocks remote scripts, form submission, and all network
+   connections from the page; the native side additionally cancels every non-local
+   navigation. The editor's `<textarea>` is the source of truth; the preview
+   re-renders from it (task checkboxes in the preview write back into it).
 
 ## Swift ↔ JavaScript bridge
 
@@ -50,11 +57,19 @@ A single `WKScriptMessageHandler` named `bridge` carries messages **page → Swi
 | `dirty`    | unsaved-changes state changed (drives reload suspension)      |
 | `change`   | latest editor text (fallback cache for saves)                 |
 | `save`     | write the editor text to disk                                 |
+| `saveAs`   | run Save As (Windows routes Ctrl+Shift+S through the page)    |
+| `print`    | open the native print dialog (Windows routes Ctrl+P in-page)  |
 | `setWrap`  | wrap on/off (keeps the View ▸ Wrap Lines checkmark in sync)   |
+
+(The Windows port adds a few more — `newFile`, `open`, `openPath`, `closeTab`,
+`reload` — because WinForms accelerators can be swallowed by the WebView, so
+those shortcuts are handled in-page and bridged out.)
 
 Swift calls back into the page with `evaluateJavaScript` hooks: `window.__onSaved`,
 `window.__getText` (live text pulled before every save), `window.__setMode`,
-`window.__toggleWrap`, `window.__find`, `window.__findReplace`.
+`window.__toggleWrap`, `window.__find`, `window.__findReplace`,
+`window.__toggleTOC`, `window.__zoomIn` / `__zoomOut` / `__zoomReset`
+(and `window.__escape`, Windows-only).
 
 **New menu items that act on the document follow this pattern**: logic lives in JS,
 exposed as a `window.__something`, called from the native menu.
@@ -71,7 +86,10 @@ Saving pulls the live editor text from the page, writes it, and refreshes the
 stored modification date so the app's own write doesn't trigger a reload. Both
 window close and app quit prompt for unsaved changes; quit defers termination
 until saves complete. Recently opened files persist in `UserDefaults` and show
-under File ▸ Open Recent.
+under File ▸ Open Recent; the set of open documents persists too, so a plain
+launch restores the last session. Markdown files can be dropped onto any
+window (a `WKWebView` subclass intercepts file drags), and each window carries
+the standard unsaved-dot and title-bar proxy icon.
 
 ## Design choices / trade-offs
 
@@ -82,7 +100,9 @@ under File ▸ Open Recent.
 - **In-page UI** (toolbar, find bar) lives in HTML/CSS/JS so it themes for free
   via the shared CSS variables and needs no extra native views.
 - **Fully offline**: the app makes no network requests (the AI assistant was
-  removed in v1.2; see DESIGN.md).
-- **macOS-only by construction** (AppKit + WKWebView). A Windows port would mean
-  rewriting the native shell (Tauri would be the closest fit); the in-page UI
-  would port nearly as-is.
+  removed in v1.2; see DESIGN.md). Even Mermaid and KaTeX are bundled, pinned
+  versions fetched once at build time.
+- **Two thin native shells, one shared page** (AppKit + WKWebView on macOS,
+  WinForms + WebView2 on Windows). Nearly all feature logic lives in the shared
+  template, so the ports stay in lockstep; the Windows template is regenerated
+  from the Mac one by `windows/regen-template.py`, never edited by hand.

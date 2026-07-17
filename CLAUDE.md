@@ -182,17 +182,25 @@ Both have caught real errors. They do not replace an actual build.
   combined, dated section in the root `CHANGELOG.md` (the canonical changelog —
   build.sh copies it into the bundle for the About window). Update
   `CFBundleShortVersionString` **and** `CFBundleVersion` in `Info.plist`.
-  Do NOT bump per individual fix (that was tried and rolled back).
-- Docs shown by the About window: `CHANGELOG.md` (root), `Resources/ARCHITECTURE.md`
-  (structure), `Resources/DESIGN.md` (behavior/how-it-works). Update DESIGN.md when
-  changing feature behavior.
+  Do NOT bump per individual fix (that was tried and rolled back). Also update
+  the version badge at the top of `README.md`.
+- Docs shown by the About window: `README.md` (root; bundled together with
+  `docs/` images so its screenshots render), `CHANGELOG.md` (root),
+  `Resources/ARCHITECTURE.md` (structure), `Resources/DESIGN.md`
+  (behavior/how-it-works). Update DESIGN.md when changing feature behavior,
+  and README's feature list when adding user-visible features.
 - Theme is Light/Dark/System, persisted in `localStorage` under `theme`, resolved
   before first paint by an inline script in `<head>`.
 - UI stays minimalist. Prefer a keyboard shortcut over another toolbar button.
 
 ## State as of this handoff
 
-App is at **v1.6** (2026-07-16) — see `CHANGELOG.md` for release notes. v1.6
+App is at **v1.8** (2026-07-16) — see `CHANGELOG.md` for release notes. v1.8
+added the whole review-suggested feature set: Print/PDF, TOC sidebar,
+clickable task checkboxes, offline Mermaid + KaTeX (lazy-loaded; assets
+fetched by build.sh), word count, zoom menu items, whole-word find, session
+restore, and macOS window polish (dirty dot, proxy icon, window drag-drop).
+v1.7 added File ▸ Save As… (⇧⌘S / Ctrl+Shift+S) on both platforms. v1.6
 was a bugfix batch from a full review: scroll-restore ordering, CRLF
 preservation on save, close-with-save race, mode-persist leak, Escape-closes-
 find (Mac), navigation lockdown (+ `form-action 'none'` CSP), About-docs
