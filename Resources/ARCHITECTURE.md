@@ -20,6 +20,7 @@ MarkdownViewer/
 │  ├─ katex.min.js|css, katex-auto-render.min.js, fonts/  # math (MIT), lazy
 │  ├─ github-markdown-*.css  # GitHub markdown styling (MIT)
 │  ├─ hljs-github-*.css      # highlight.js themes
+│  ├─ SHA256SUMS             # pinned hashes for every downloaded render asset
 │  ├─ ARCHITECTURE.md        # this file, shown by the About window
 │  └─ DESIGN.md              # behavioral design doc, shown by the About window
 ├─ docs/                     # icon + screenshots (bundled so the in-app README renders)
@@ -37,15 +38,17 @@ MarkdownViewer/
    relative images), `__TITLE__`, and — always **last**, so document text can't clobber
    other tokens — `__MARKDOWN__` (the text as a JSON-escaped JS string, with `</`
    explicitly escaped).
-2. The filled template is written to a temp HTML file and loaded with
-   `loadFileURL(allowingReadAccessTo:"/")` so bundled assets and local images both resolve.
+2. The filled template is written to a temp HTML file. That page can read only
+   its temp directory. Bundled assets and document-relative regular files are
+   exposed through separate directory-confined URL handlers/virtual hosts with
+   a 64 MiB per-resource limit.
 3. In the page, `marked.parse()` renders the markdown, heading ids are generated,
-   the output is sanitized (inline event handlers and script-scheme URLs stripped),
+   the output is sanitized with a tag/attribute/URL allowlist,
    and `highlight.js` colorizes code. Mermaid diagrams and KaTeX math render from
    bundled libraries that are injected only when a document uses them. A
-   Content-Security-Policy blocks remote scripts, form submission, and all network
-   connections from the page; the native side additionally cancels every non-local
-   navigation. The editor's `<textarea>` is the source of truth; the preview
+   Content-Security-Policy blocks remote resources, form submission, and all network
+   connections from the page; the native side additionally accepts navigation and
+   bridge messages only from the generated top-level page. The editor's `<textarea>` is the source of truth; the preview
    re-renders from it (task checkboxes in the preview write back into it).
 
 ## Swift ↔ JavaScript bridge
@@ -63,7 +66,8 @@ A single `WKScriptMessageHandler` named `bridge` carries messages **page → Swi
 
 (The Windows port adds a few more — `newFile`, `open`, `openPath`, `closeTab`,
 `reload` — because WinForms accelerators can be swallowed by the WebView, so
-those shortcuts are handled in-page and bridged out.)
+those shortcuts are handled in-page and bridged out.) Every native receiver
+validates the exact source page before dispatching an action.
 
 Swift calls back into the page with `evaluateJavaScript` hooks: `window.__onSaved`,
 `window.__getText` (live text pulled before every save), `window.__setMode`,
@@ -82,9 +86,13 @@ save runs a save panel defaulting to `.md`). Native window tabbing; the first
 window remembers its frame, later ones cascade. Each file-backed controller
 polls the file's modification date once a second to live-reload external
 changes — suspended while the buffer is dirty so edits are never clobbered.
-Saving pulls the live editor text from the page, writes it, and refreshes the
-stored modification date so the app's own write doesn't trigger a reload. Both
-window close and app quit prompt for unsaved changes; quit defers termination
+One byte snapshot supplies the rendered text, editor cache, and initial
+fingerprint. Saving pulls the live editor text from the page, verifies an
+on-disk SHA-256 fingerprint, preserves UTF-8/16/32 BOM and newline format,
+writes it, and refreshes the fingerprint so the app's own write doesn't trigger
+a reload. Writes replace a flushed temporary file from the same directory
+rather than truncating in place.
+Both window close and app quit prompt for unsaved changes; quit defers termination
 until saves complete. Recently opened files persist in `UserDefaults` and show
 under File ▸ Open Recent; the set of open documents persists too, so a plain
 launch restores the last session. Markdown files can be dropped onto any

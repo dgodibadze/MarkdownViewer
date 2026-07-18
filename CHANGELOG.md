@@ -5,6 +5,53 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [1.9] — 2026-07-17
+
+### Security
+
+- Upgraded bundled Mermaid from vulnerable 10.9.1 to patched 10.9.6 and added
+  SHA-256 verification for every downloaded renderer asset.
+- Replaced filesystem-wide WebView read access with narrowly scoped asset and
+  document-folder URL mappings. Native bridge messages are accepted only from
+  the generated top-level page, and all unexpected navigation schemes are
+  cancelled. Safe local links are handed to the native shell; executable-capable
+  targets are only revealed in Finder/Explorer.
+- Replaced the permissive raw-HTML scrubber with a tag/attribute/URL allowlist,
+  added post-render defense-in-depth for Mermaid/KaTeX output, blocked remote
+  images, and tightened the CSP. Task-checkbox editing accepts only
+  per-render-tokened controls emitted by Marked, never raw HTML inputs.
+- Release installers now require SHA-256 verification, validate a staged app
+  before an atomic swap, and preserve the previous install on failure. The
+  macOS installer preserves Gatekeeper quarantine; Windows verifies Microsoft's
+  signature and exit status before running the WebView2 bootstrapper.
+
+### Fixed
+
+- Installers can now test a branch before it is merged. Passing
+  `--branch dev` to the macOS installer, or setting `MARKDOWNVIEWER_REF=dev`
+  for Windows, skips published releases and builds that ref from source instead
+  of silently installing the latest stable release/default branch.
+- The macOS installer now also supports `--branch dev --dmg`, which builds a
+  branch-specific DMG and checksum in the current folder without replacing the
+  installed app in `/Applications`.
+- Saves fingerprint the on-disk file and warn before overwriting an external
+  edit or recreating a deleted file, including changes made before the 1-second
+  live-reload poll runs.
+- UTF-8 BOM, UTF-16/UTF-32 LE/BE BOM, LF, CRLF, and CR formats survive edits.
+  Malformed/lossy or mixed-format files require explicit confirmation before
+  UTF-8/LF conversion.
+- Save As changes document identity only after a successful write and refuses
+  to create a second open window/tab for the same destination. Windows saves
+  now use a flushed same-directory replacement instead of truncating in place.
+- Printing waits for pending Mermaid/KaTeX rendering; deleted files are now
+  noticed by the watcher; malformed anchor escapes no longer throw; whole-word
+  search uses Unicode letters, marks, and numbers.
+- A single byte snapshot now drives rendering, the save cache, and conflict
+  fingerprints. Initial read failures cannot be saved as empty files.
+- Windows release builds regenerate the shared template, verify vendored assets,
+  and publish from a clean directory so stale files cannot enter an archive.
+- Escaped the macOS render-error path before inserting it into HTML.
+
 ## [1.8] — 2026-07-16
 
 ### Added

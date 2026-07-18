@@ -9,14 +9,14 @@
     <RootNamespace>MarkdownViewer</RootNamespace>
     <AssemblyName>MarkdownViewer</AssemblyName>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>1.8.0</Version>
+    <Version>1.9.0</Version>
     <Company>David Godibadze</Company>
     <Product>MarkdownViewer</Product>
     <Copyright>© David Godibadze — GPLv3</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4078.44" />
   </ItemGroup>
 
   <!-- Windows-specific render template -->

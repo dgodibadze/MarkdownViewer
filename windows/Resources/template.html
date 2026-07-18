@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <!-- CSP: documents can contain raw HTML, so without this a malicious .md could
      load a remote script that talks to the native bridge (including "save").
-     Scripts/styles: bundled file:// assets + our inline code only. Images may
-     be local or remote; nothing on the page may open network connections. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file: 'unsafe-inline'; style-src file: 'unsafe-inline'; img-src file: data: https: http:; media-src file: data:; font-src file: data:; connect-src 'none'; form-action 'none'">
+     Scripts/styles: narrowly mapped bundled assets + our inline code only.
+     Images may be document-local or data URLs; no remote requests are allowed. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://appassets.local 'unsafe-inline'; style-src https://appassets.local 'unsafe-inline'; img-src https://document.local https://appassets.local data:; media-src https://document.local data:; font-src https://appassets.local data:; connect-src 'none'; form-action 'none'; object-src 'none'; base-uri https://document.local">
 <base href="__BASE__">
 <title>__TITLE__</title>
 
@@ -28,7 +28,7 @@
 })();
 </script>
 
-<!-- Bundled markdown + syntax themes (toggled by JS). file:// = offline, no network. -->
+<!-- Bundled markdown + syntax themes (toggled by JS; offline, no network). -->
 <link rel="stylesheet" id="md-light"   href="__RES__/github-markdown-light.css">
 <link rel="stylesheet" id="md-dark"    href="__RES__/github-markdown-dark.css">
 <link rel="stylesheet" id="hljs-light" href="__RES__/hljs-github-light.css">
@@ -341,23 +341,22 @@ const MD = __MARKDOWN__;
   editor.value = MD;
 
   // Bundled-assets dir, for scripts loaded lazily (mermaid, KaTeX). The CSP
-  // permits file: scripts, so injected <script src> from here is allowed.
+  // permits only this scoped resource origin for injected script sources.
   var RES_DIR = '__RES__';
   var loadedScripts = {};
-  function loadScript(src, cb) {
-    if (loadedScripts[src] === true) { cb(true); return; }
-    if (Array.isArray(loadedScripts[src])) { loadedScripts[src].push(cb); return; }
-    loadedScripts[src] = [cb];
-    var s = document.createElement('script');
-    s.src = src;
-    function done(ok) {
-      var cbs = loadedScripts[src];
-      loadedScripts[src] = ok ? true : undefined;
-      cbs.forEach(function (f) { f(ok); });
-    }
-    s.onload = function () { done(true); };
-    s.onerror = function () { done(false); };
-    document.head.appendChild(s);
+  function loadScript(src) {
+    if (loadedScripts[src]) return loadedScripts[src];
+    loadedScripts[src] = new Promise(function (resolve) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.onload = function () { resolve(true); };
+      s.onerror = function () { resolve(false); };
+      document.head.appendChild(s);
+    }).then(function (ok) {
+      if (!ok) delete loadedScripts[src];
+      return ok;
+    });
+    return loadedScripts[src];
   }
 
   // ---- Native bridge: WebView2 (chrome.webview) first, WKWebView as fallback
@@ -378,13 +377,33 @@ const MD = __MARKDOWN__;
   function render() {
     var text = editor.value;
     if (window.marked) {
-      marked.setOptions({ gfm: true, breaks: false });
-      content.innerHTML = marked.parse(text);
-      sanitize(content);
+      try {
+        marked.setOptions({ gfm: true, breaks: false });
+        var nonceBytes = new Uint32Array(4);
+        crypto.getRandomValues(nonceBytes);
+        var taskNonce = Array.prototype.map.call(nonceBytes, function (n) {
+          return n.toString(16).padStart(8, '0');
+        }).join('');
+        var renderer = new marked.Renderer();
+        renderer.checkbox = function (checked) {
+          return '<input ' + (checked ? 'checked="" ' : '') +
+            'disabled="" type="checkbox" data-mdv-task="' + taskNonce + '">';
+        };
+        // Parse into a detached fragment so raw HTML cannot load or fire an
+        // event before sanitization finishes. Any sanitizer/parser failure is
+        // fail-closed: show source as text, never a partly sanitized tree.
+        var parsed = document.createElement('template');
+        parsed.innerHTML = marked.parse(text, { renderer: renderer });
+        sanitize(parsed.content, taskNonce);
+        content.textContent = '';
+        content.appendChild(parsed.content);
+      } catch (e) {
+        content.textContent = text;
+      }
     } else {
       content.textContent = text;
     }
-    upgradeMermaid(content);          // before hljs: replaces mermaid <pre>s
+    var mermaidReady = upgradeMermaid(content); // before hljs: replaces mermaid <pre>s
     if (window.hljs) {
       content.querySelectorAll('pre code').forEach(function (b) {
         try { hljs.highlightElement(b); } catch (e) {}
@@ -392,16 +411,29 @@ const MD = __MARKDOWN__;
     }
     addHeadingIds(content);
     addCopyButtons(content);
-    renderMath(text);
+    var mathReady = renderMath(text);
     wireTaskCheckboxes(content);
     buildTOC(content);
     updateCount(text);
+    return Promise.all([mermaidReady, mathReady]);
   }
+  window.__printReady = true;
+  window.__preparePrint = function () {
+    clearTimeout(renderTimer);
+    window.__printReady = false;
+    return Promise.resolve(render()).catch(function () {}).then(function () {
+      return new Promise(function (resolve) {
+        requestAnimationFrame(function () { requestAnimationFrame(resolve); });
+      });
+    }).then(function () { window.__printReady = true; }, function () {
+      window.__printReady = true;
+    });
+  };
 
   // ---- Mermaid diagrams (```mermaid fences; mermaid.min.js loads on first use)
   function upgradeMermaid(root) {
     var blocks = root.querySelectorAll('pre code.language-mermaid');
-    if (!blocks.length) return;
+    if (!blocks.length) return Promise.resolve();
     blocks.forEach(function (code) {
       var div = document.createElement('div');
       div.className = 'mermaid';
@@ -409,15 +441,35 @@ const MD = __MARKDOWN__;
       var pre = code.parentElement;
       pre.parentNode.replaceChild(div, pre);
     });
-    loadScript(RES_DIR + '/mermaid.min.js', function (ok) {
+    return loadScript(RES_DIR + '/mermaid.min.js').then(function (ok) {
       if (!ok || !window.mermaid) return;
       try {
         mermaid.initialize({
           startOnLoad: false, securityLevel: 'strict',
           theme: document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default'
         });
-        mermaid.run({ nodes: content.querySelectorAll('.mermaid') });
+        return Promise.resolve(mermaid.run({ nodes: root.querySelectorAll('.mermaid') }))
+          .then(function () { scrubGeneratedContent(content); })
+          .catch(function () {});
       } catch (e) {}
+    });
+  }
+
+  // Defense in depth for HTML/SVG created after the main Markdown sanitizer.
+  // Patched Mermaid/KaTeX remain the primary control; this removes executable
+  // attributes and remote/script URLs if a future renderer regresses.
+  function scrubGeneratedContent(root) {
+    root.querySelectorAll('script,iframe,object,embed').forEach(function (el) { el.remove(); });
+    root.querySelectorAll('*').forEach(function (el) {
+      for (var i = el.attributes.length - 1; i >= 0; i--) {
+        var name = el.attributes[i].name.toLowerCase();
+        var value = (el.attributes[i].value || '').replace(/[\s\u0000-\u001f]+/g, '').toLowerCase();
+        if (name.slice(0, 2) === 'on' ||
+            ((name === 'href' || name === 'xlink:href' || name === 'src') &&
+             /^(?:javascript:|vbscript:|https?:|data:text\/html)/.test(value))) {
+          el.removeAttribute(el.attributes[i].name);
+        }
+      }
     });
   }
 
@@ -426,10 +478,10 @@ const MD = __MARKDOWN__;
   // characters inside math (e.g. a_b … c_d on one line) can be transformed
   // before KaTeX sees them. Prefer \( \) / $$ on their own lines.
   function renderMath(text) {
-    if (!/\$\$|\\\(|\\\[/.test(text)) return;
-    loadScript(RES_DIR + '/katex.min.js', function (ok) {
+    if (!/\$\$|\\\(|\\\[/.test(text)) return Promise.resolve();
+    return loadScript(RES_DIR + '/katex.min.js').then(function (ok) {
       if (!ok) return;
-      loadScript(RES_DIR + '/katex-auto-render.min.js', function (ok2) {
+      return loadScript(RES_DIR + '/katex-auto-render.min.js').then(function (ok2) {
         if (!ok2 || !window.renderMathInElement) return;
         try {
           renderMathInElement(content, {
@@ -440,6 +492,7 @@ const MD = __MARKDOWN__;
             ],
             throwOnError: false
           });
+          scrubGeneratedContent(content);
         } catch (e) {}
       });
     });
@@ -447,8 +500,9 @@ const MD = __MARKDOWN__;
 
   // ---- Clickable task checkboxes (write [ ]/[x] back into the source) ----
   // The Nth checkbox in the preview maps to the Nth task marker in the
-  // markdown. If the counts disagree (raw-HTML inputs, task syntax inside a
-  // code fence), leave everything disabled rather than guess.
+  // markdown. Raw-HTML inputs never receive the per-render token. If counts
+  // disagree (for example task syntax inside a code fence), leave every box
+  // disabled rather than guess.
   var TASK_RE = /^([ \t>]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])(\])/gm;
   function taskPositions(text) {
     var pos = [], m;
@@ -457,7 +511,7 @@ const MD = __MARKDOWN__;
     return pos;
   }
   function wireTaskCheckboxes(root) {
-    var boxes = Array.prototype.slice.call(root.querySelectorAll('li input[type="checkbox"]'));
+    var boxes = Array.prototype.slice.call(root.querySelectorAll('li input[data-mdv-task]'));
     if (!boxes.length) return;
     if (taskPositions(editor.value).length !== boxes.length) return;
     boxes.forEach(function (box, i) {
@@ -531,18 +585,59 @@ const MD = __MARKDOWN__;
   }
 
   // ---- Sanitize rendered HTML ----
-  // Markdown may contain raw HTML. innerHTML already neutralizes <script>
-  // tags (the parser never executes them), so the live XSS vectors are inline
-  // event handlers (onerror=, onclick=, …) and javascript: URLs — strip both.
-  // The CSP in <head> backstops everything else (remote scripts, fetch/XHR).
-  function sanitize(root) {
-    root.querySelectorAll('*').forEach(function (el) {
+  // Markdown is untrusted. Keep only the small HTML subset needed for normal
+  // Markdown output; active content, embedded documents, styles and controls
+  // are removed before syntax highlighting / Mermaid / KaTeX upgrades run.
+  function sanitize(root, taskNonce) {
+    var allowedTags = new Set([
+      'A','ABBR','B','BLOCKQUOTE','BR','CODE','DEL','DETAILS','DIV','EM',
+      'H1','H2','H3','H4','H5','H6','HR','I','IMG','KBD','LI','OL','P','PRE',
+      'S','SAMP','SMALL','SPAN','STRONG','SUB','SUMMARY','SUP','TABLE','TBODY',
+      'TD','TFOOT','TH','THEAD','TR','UL','INPUT'
+    ]);
+    var allowedAttrs = new Set([
+      'align','alt','checked','colspan','data-mdv-task','disabled','height','href','open','rowspan',
+      'src','start','title','type','width'
+    ]);
+    var discardTags = new Set(['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','FORM','TEMPLATE']);
+    Array.prototype.slice.call(root.querySelectorAll('*')).forEach(function (el) {
+      if (!allowedTags.has(el.tagName)) {
+        if (discardTags.has(el.tagName)) el.remove();
+        else {
+          while (el.firstChild) el.parentNode.insertBefore(el.firstChild, el);
+          el.remove();
+        }
+        return;
+      }
+      if (el.tagName === 'INPUT' &&
+          !((el.getAttribute('type') || '').toLowerCase() === 'checkbox' && el.disabled &&
+            el.getAttribute('data-mdv-task') === taskNonce)) {
+        el.remove(); return;
+      }
       for (var i = el.attributes.length - 1; i >= 0; i--) {
         var name = el.attributes[i].name;
-        if (name.slice(0, 2).toLowerCase() === 'on') { el.removeAttribute(name); continue; }
-        if (name === 'href' || name === 'src' || name === 'xlink:href') {
-          var v = (el.attributes[i].value || '').replace(/[\s\u0000-\u001f]+/g, '').toLowerCase();
-          if (v.indexOf('javascript:') === 0 || v.indexOf('vbscript:') === 0) el.removeAttribute(name);
+        if (name === 'class') {
+          var classes = (el.getAttribute('class') || '').split(/\s+/).filter(function (c) {
+            return /^language-[a-z0-9_+.-]+$/i.test(c) ||
+                   c === 'task-list-item' || c === 'contains-task-list';
+          });
+          if (classes.length) el.setAttribute('class', classes.join(' '));
+          else el.removeAttribute('class');
+          continue;
+        }
+        if (!allowedAttrs.has(name.toLowerCase())) { el.removeAttribute(name); continue; }
+        if (name.toLowerCase() === 'align' &&
+            !/^(?:left|center|right)$/.test((el.attributes[i].value || '').toLowerCase())) {
+          el.removeAttribute(name); continue;
+        }
+        if (name === 'href' || name === 'src') {
+          var raw = (el.attributes[i].value || '').trim();
+          var compact = raw.replace(/[\s\u0000-\u001f]+/g, '').toLowerCase();
+          var isFragment = name === 'href' && raw.charAt(0) === '#';
+          var isRelative = !/^[a-z][a-z0-9+.-]*:/i.test(compact) && !compact.startsWith('//');
+          var isExternalLink = name === 'href' && /^(https?:|mailto:)/i.test(compact);
+          var isDataImage = name === 'src' && /^data:image\/(?:png|gif|jpe?g|webp);base64,/i.test(compact);
+          if (!(isFragment || isRelative || isExternalLink || isDataImage)) el.removeAttribute(name);
         }
       }
     });
@@ -569,7 +664,9 @@ const MD = __MARKDOWN__;
     var href = a.getAttribute('href') || '';
     if (href.charAt(0) !== '#') return;
     e.preventDefault();
-    var el = document.getElementById(decodeURIComponent(href.slice(1)));
+    var target = href.slice(1);
+    try { target = decodeURIComponent(target); } catch (err) { return; }
+    var el = document.getElementById(target);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
@@ -843,20 +940,28 @@ const MD = __MARKDOWN__;
       var res = [];
       if (!needle) return res;
       var src = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      if (wholeWord) {
-        // \b only makes sense against word characters; a needle like "->"
-        // gets no boundary on that side (lookbehind isn't available on the
-        // oldest supported WebKit).
-        if (/^\w/.test(needle)) src = '\\b' + src;
-        if (/\w$/.test(needle)) src = src + '\\b';
-      }
       var re = new RegExp(src, caseSensitive ? 'g' : 'gi');
       var m;
       while ((m = re.exec(hay)) !== null) {
+        if (wholeWord) {
+          var firstIsWord = isWordCharAt(needle, 0);
+          var lastIsWord = isWordCharAt(needle, needle.length - 1);
+          if ((firstIsWord && isWordCharAt(hay, m.index - 1)) ||
+              (lastIsWord && isWordCharAt(hay, m.index + m[0].length))) continue;
+        }
         res.push(m.index);
         if (re.lastIndex === m.index) re.lastIndex++;
       }
       return res;
+    }
+    function isWordCharAt(text, index) {
+      if (index < 0 || index >= text.length) return false;
+      // Step back to the beginning of a surrogate pair when checking the
+      // character immediately before a match.
+      var code = text.charCodeAt(index);
+      if (code >= 0xDC00 && code <= 0xDFFF && index > 0) index--;
+      var cp = text.codePointAt(index);
+      return /[\p{L}\p{M}\p{N}_]/u.test(String.fromCodePoint(cp));
     }
     function refreshCount() {
       countEl.textContent = matches.length ? (current + 1) + '/' + matches.length : '0/0';

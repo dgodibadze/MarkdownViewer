@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -56,9 +57,8 @@ static class Settings
 // MARK: - Markdown rendering
 
 /// Builds the full HTML document for a markdown file by substituting tokens
-/// in the bundled template. Asset CSS/JS are referenced via absolute file URLs
-/// into the app's Resources directory; relative images in the markdown resolve
-/// against the markdown file's own directory via <base href>.
+/// in the bundled template. Assets and document-relative files use separate,
+/// scoped origins rather than unrestricted file URLs.
 static class Renderer
 {
     public static string ResourcesDir =>
@@ -67,7 +67,7 @@ static class Renderer
     /// Renders the markdown file (or an empty untitled document when
     /// `markdownFile` is null) into `tempFile`.
     /// Returns null on success, or a human-readable error string on failure.
-    public static string Render(string markdownFile, string tempFile)
+    public static string Render(string markdownFile, string markdownText, string tempFile)
     {
         var tplPath = Path.Combine(ResourcesDir, "template.html");
         if (!File.Exists(tplPath))
@@ -76,35 +76,22 @@ static class Renderer
         try { template = File.ReadAllText(tplPath, Encoding.UTF8); }
         catch (Exception e) { return $"Could not read bundled template at {tplPath}.\n{e.Message}"; }
 
-        string mdText;
-        if (markdownFile != null)
-        {
-            try { mdText = File.ReadAllText(markdownFile); }   // UTF-8 with BOM detection, lossy on bad bytes
-            catch (Exception e) { return $"Could not read the markdown file.\n{e.Message}"; }
-        }
-        else
-        {
-            mdText = "";
-        }
-
-        // Resources directory as a file:// URL string (assets live here).
-        var resDir = new Uri(ResourcesDir).AbsoluteUri.TrimEnd('/');
-        // Markdown file's directory for resolving relative images/links (needs trailing slash).
-        // Untitled documents have no directory yet — use the user profile as a placeholder.
-        var dir = markdownFile != null
-            ? Path.GetDirectoryName(Path.GetFullPath(markdownFile)) ?? ""
-            : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var baseDir = new Uri(dir + Path.DirectorySeparatorChar).AbsoluteUri;
+        // WebView2 maps these private hosts to the bundle and the current
+        // document directory. The page never receives unrestricted file URLs.
+        var resDir = "https://appassets.local";
+        var baseDir = "https://document.local/";
         var title = markdownFile != null ? Path.GetFileName(markdownFile) : "Untitled";
 
         // __MARKDOWN__ must be substituted LAST: it injects arbitrary document
         // text, and any token replaced after it would also match occurrences of
         // that token *inside* the document (e.g. a markdown file that mentions
         // "__TITLE__" literally would get corrupted).
+        var markdownSlot = $"__MDV_MARKDOWN_SLOT_{Guid.NewGuid():N}__";
+        template = template.Replace("__MARKDOWN__", markdownSlot);
         template = template.Replace("__RES__", resDir);
         template = template.Replace("__BASE__", baseDir);
         template = template.Replace("__TITLE__", HtmlEscape(title));
-        template = template.Replace("__MARKDOWN__", JsString(mdText));
+        template = template.Replace(markdownSlot, JsString(markdownText));
 
         try
         {
@@ -124,6 +111,30 @@ static class Renderer
 
     public static string HtmlEscape(string s) =>
         s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+}
+
+enum TextEncodingKind { Utf8, Utf8Bom, Utf16LE, Utf16BE, Utf32LE, Utf32BE, Lossy }
+enum NewlineKind { Lf, CrLf, Cr, Mixed }
+sealed record DiskFingerprint(long Length, long ModifiedTicks, string Sha256)
+{
+    public static DiskFingerprint Read(string path)
+    {
+        try
+        {
+            var data = File.ReadAllBytes(path);
+            return FromData(path, data);
+        }
+        catch { return null; }
+    }
+
+    public static DiskFingerprint FromData(string path, byte[] data)
+    {
+        long modifiedTicks;
+        try { modifiedTicks = File.GetLastWriteTimeUtc(path).Ticks; }
+        catch { modifiedTicks = 0; }
+        return new DiskFingerprint(data.LongLength, modifiedTicks,
+            Convert.ToHexString(SHA256.HashData(data)));
+    }
 }
 
 // MARK: - Viewer tab
@@ -149,14 +160,15 @@ sealed class ViewerTab : TabPage
     /// the page can't answer. Seeded from disk on every load/reload so a save
     /// before any edit can never write an empty or stale copy.
     string lastText = "";
+    bool hasValidTextSnapshot;
     /// Mode to force once the page finishes loading (e.g. "split" for new
     /// documents). Calling __setMode before the page loads is a silent no-op,
     /// so this is applied from NavigationCompleted instead.
     public string StartMode;
-    /// True when the file on disk used CRLF line endings. The textarea's
-    /// `value` is LF-normalized by the HTML spec, so without re-applying CRLF
-    /// on save a one-character edit would silently rewrite every line ending.
-    bool usesCrLf;
+    /// Original text encoding and newline convention, preserved on save.
+    TextEncodingKind textEncoding = TextEncodingKind.Utf8;
+    NewlineKind newlineKind = NewlineKind.Lf;
+    DiskFingerprint lastDiskFingerprint;
 
     public string DisplayName => FilePath != null ? Path.GetFileName(FilePath) : "Untitled";
 
@@ -164,6 +176,7 @@ sealed class ViewerTab : TabPage
     {
         this.host = host;
         FilePath = filePath != null ? Path.GetFullPath(filePath) : null;
+        hasValidTextSnapshot = FilePath == null;
         Text = DisplayName;
         ToolTipText = FilePath ?? "Unsaved document";
         var tmpDir = Path.Combine(Path.GetTempPath(), "MarkdownViewer");
@@ -185,6 +198,12 @@ sealed class ViewerTab : TabPage
         s.IsStatusBarEnabled = false;
         s.IsGeneralAutofillEnabled = false;
         s.IsPasswordAutosaveEnabled = false;
+        web.CoreWebView2.SetVirtualHostNameToFolderMapping(
+            "appassets.local", Renderer.ResourcesDir,
+            CoreWebView2HostResourceAccessKind.DenyCors);
+        web.CoreWebView2.AddWebResourceRequestedFilter(
+            "https://document.local/*", CoreWebView2WebResourceContext.All);
+        web.CoreWebView2.WebResourceRequested += OnDocumentResourceRequested;
 
         web.CoreWebView2.WebMessageReceived += OnWebMessage;
         // Escape is treated as a WinForms dialog key and never reaches the page;
@@ -207,19 +226,34 @@ sealed class ViewerTab : TabPage
         web.CoreWebView2.NavigationStarting += (_, e) =>
         {
             var uri = e.Uri ?? "";
-            if (uri.StartsWith("http://") || uri.StartsWith("https://") || uri.StartsWith("mailto:"))
+            if (IsTrustedPage(uri) || uri == "about:blank") return;
+            e.Cancel = true;
+            if (!e.IsUserInitiated) return;
+            if (TryDocumentUrl(uri, out var local))
             {
-                e.Cancel = true;
-                if (e.IsUserInitiated) OpenExternal(uri);
+                if (IsMarkdownPath(local)) host.OpenFile(local);
+                else OpenLocalFile(local);
+                return;
             }
+            if (Uri.TryCreate(uri, UriKind.Absolute, out var parsed) &&
+                (parsed.Scheme == "http" || parsed.Scheme == "https" || parsed.Scheme == "mailto") &&
+                parsed.Host != "appassets.local" && parsed.Host != "document.local")
+                OpenExternal(uri);
         };
         web.CoreWebView2.NewWindowRequested += (_, e) =>
         {
             e.Handled = true;
             var uri = e.Uri ?? "";
-            if (e.IsUserInitiated &&
-                (uri.StartsWith("http://") || uri.StartsWith("https://") || uri.StartsWith("mailto:")))
-                OpenExternal(uri);
+            if (!e.IsUserInitiated) return;
+            if (TryDocumentUrl(uri, out var local))
+            {
+                if (IsMarkdownPath(local)) host.OpenFile(local);
+                else OpenLocalFile(local);
+                return;
+            }
+            if (Uri.TryCreate(uri, UriKind.Absolute, out var parsed) &&
+                (parsed.Scheme == "http" || parsed.Scheme == "https" || parsed.Scheme == "mailto") &&
+                parsed.Host != "appassets.local" && parsed.Host != "document.local") OpenExternal(uri);
         };
 
         RenderAndLoad();
@@ -232,9 +266,161 @@ sealed class ViewerTab : TabPage
         try { Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true }); } catch { }
     }
 
+    bool IsTrustedPage(string uri)
+    {
+        try
+        {
+            return string.Equals(CanonicalLocalPath(new Uri(uri).LocalPath),
+                CanonicalLocalPath(tempFile), StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    static bool IsMarkdownPath(string path)
+    {
+        var ext = Path.GetExtension(path).TrimStart('.');
+        return new[] { "md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "markdn",
+            "mdtxt", "text", "txt", "rmd", "qmd", "mdx", "mdc" }
+            .Contains(ext, StringComparer.OrdinalIgnoreCase);
+    }
+
+    static bool IsSafeLocalOpen(string path)
+    {
+        var ext = Path.GetExtension(path).TrimStart('.');
+        return new[] { "bmp", "csv", "gif", "heic", "jpeg", "jpg", "json", "log",
+            "m4a", "mov", "mp3", "mp4", "pdf", "png", "rtf", "tif", "tiff",
+            "tsv", "txt", "wav", "webp" }.Contains(ext, StringComparer.OrdinalIgnoreCase);
+    }
+
+    static void OpenLocalFile(string path)
+    {
+        if (IsSafeLocalOpen(path)) { OpenExternal(path); return; }
+        try
+        {
+            var info = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
+            if (Directory.Exists(path)) info.ArgumentList.Add(path);
+            else
+            {
+                info.ArgumentList.Add("/select,");
+                info.ArgumentList.Add(path);
+            }
+            Process.Start(info);
+        }
+        catch { }
+    }
+
+    internal static string CanonicalLocalPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var volume = Path.GetPathRoot(full) ?? throw new IOException("Path has no filesystem root.");
+        var current = volume;
+        var parts = full.Substring(volume.Length).Split(
+            new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        foreach (var part in parts)
+        {
+            current = Path.Combine(current, part);
+            FileSystemInfo info = Directory.Exists(current)
+                ? new DirectoryInfo(current)
+                : new FileInfo(current);
+            if (info.Exists && (info.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                var resolved = info.ResolveLinkTarget(true);
+                if (resolved != null) current = Path.GetFullPath(resolved.FullName);
+            }
+        }
+        return Path.GetFullPath(current);
+    }
+
+    bool TryDocumentUrl(string uri, out string localPath)
+    {
+        localPath = null;
+        try
+        {
+            if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed) ||
+                !string.Equals(parsed.Host, "document.local", StringComparison.OrdinalIgnoreCase)) return false;
+            var lexicalRoot = Path.GetFullPath(FilePath != null
+                ? Path.GetDirectoryName(FilePath) ?? ""
+                : Path.GetDirectoryName(tempFile) ?? "");
+            var relative = Uri.UnescapeDataString(parsed.AbsolutePath)
+                .TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+            if (relative.IndexOf(':') >= 0 || relative.IndexOf('\0') >= 0) return false;
+            var root = CanonicalLocalPath(lexicalRoot);
+            var candidate = CanonicalLocalPath(Path.Combine(lexicalRoot, relative));
+            var prefix = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            if (!candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase)) return false;
+            localPath = candidate;
+            return true;
+        }
+        catch { return false; }
+    }
+
+    void OnDocumentResourceRequested(object sender, CoreWebView2WebResourceRequestedEventArgs e)
+    {
+        const long maxResourceBytes = 64L * 1024 * 1024;
+        try
+        {
+            if (!TryDocumentUrl(e.Request.Uri, out var path) || !File.Exists(path))
+                throw new FileNotFoundException();
+            var info = new FileInfo(path);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0 ||
+                info.Length > maxResourceBytes) throw new IOException("Resource is not a permitted regular file.");
+            var stream = new MemoryStream(ReadBoundedFile(path, maxResourceBytes), writable: false);
+            var headers = $"Content-Type: {MimeType(path)}\r\nCache-Control: no-store";
+            e.Response = web.CoreWebView2.Environment.CreateWebResourceResponse(
+                stream, 200, "OK", headers);
+        }
+        catch
+        {
+            e.Response = web.CoreWebView2.Environment.CreateWebResourceResponse(
+                new MemoryStream(Array.Empty<byte>()), 404, "Not Found", "Cache-Control: no-store");
+        }
+    }
+
+    static byte[] ReadBoundedFile(string path, long maximum)
+    {
+        using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            1024 * 1024, FileOptions.SequentialScan);
+        if (source.Length < 0 || source.Length > maximum) throw new IOException("Resource is too large.");
+        var data = new byte[(int)source.Length];
+        var offset = 0;
+        while (offset < data.Length)
+        {
+            var count = source.Read(data, offset, data.Length - offset);
+            if (count == 0) throw new EndOfStreamException();
+            offset += count;
+        }
+        if (source.ReadByte() != -1) throw new IOException("Resource changed while it was read.");
+        return data;
+    }
+
+    static string MimeType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".avif" => "image/avif", ".bmp" => "image/bmp", ".gif" => "image/gif",
+        ".heic" => "image/heic", ".jpeg" or ".jpg" => "image/jpeg",
+        ".png" => "image/png", ".svg" => "image/svg+xml", ".webp" => "image/webp",
+        ".m4a" => "audio/mp4", ".mp3" => "audio/mpeg", ".wav" => "audio/wav",
+        ".mov" => "video/quicktime", ".mp4" => "video/mp4", ".webm" => "video/webm",
+        ".txt" => "text/plain; charset=utf-8", _ => "application/octet-stream"
+    }
+
     public void RenderAndLoad()
     {
-        var err = Renderer.Render(FilePath, tempFile);
+        string err = null;
+        if (FilePath != null)
+        {
+            try
+            {
+                // One byte snapshot drives the editor text, rendered preview,
+                // and conflict baseline, closing the read/render/fingerprint race.
+                var data = File.ReadAllBytes(FilePath);
+                LoadDiskState(data);
+            }
+            catch (Exception e) { err = $"Could not read the markdown file.\n{e.Message}"; }
+        }
+        if (err == null) err = Renderer.Render(FilePath, lastText, tempFile);
         if (err != null)
         {
             var safe = Renderer.HtmlEscape(err);
@@ -248,12 +434,61 @@ sealed class ViewerTab : TabPage
             return;
         }
         web.CoreWebView2?.Navigate(new Uri(tempFile).AbsoluteUri);
-        lastModified = ModificationDate();
-        // Seed the save cache with what's actually on disk. Without this, a
-        // menu-triggered Save before any edit would write "" and wipe the file;
-        // after an external-change reload it would silently revert the file.
-        if (FilePath != null)
-            try { lastText = File.ReadAllText(FilePath); usesCrLf = lastText.Contains("\r\n"); } catch { }
+        if (FilePath == null) lastModified = null;
+    }
+
+    void LoadDiskState(byte[] data)
+    {
+        try
+        {
+            if (data.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }))
+            {
+                try { lastText = new UTF8Encoding(false, true).GetString(data, 3, data.Length - 3); textEncoding = TextEncodingKind.Utf8Bom; }
+                catch { lastText = Encoding.UTF8.GetString(data, 3, data.Length - 3); textEncoding = TextEncodingKind.Lossy; }
+            }
+            else if (data.AsSpan().StartsWith(new byte[] { 0xFF, 0xFE, 0x00, 0x00 }))
+            {
+                try { lastText = new UTF32Encoding(false, false, true).GetString(data, 4, data.Length - 4); textEncoding = TextEncodingKind.Utf32LE; }
+                catch { lastText = new UTF32Encoding(false, false, false).GetString(data, 4, data.Length - 4); textEncoding = TextEncodingKind.Lossy; }
+            }
+            else if (data.AsSpan().StartsWith(new byte[] { 0x00, 0x00, 0xFE, 0xFF }))
+            {
+                try { lastText = new UTF32Encoding(true, false, true).GetString(data, 4, data.Length - 4); textEncoding = TextEncodingKind.Utf32BE; }
+                catch { lastText = new UTF32Encoding(true, false, false).GetString(data, 4, data.Length - 4); textEncoding = TextEncodingKind.Lossy; }
+            }
+            else if (data.AsSpan().StartsWith(new byte[] { 0xFF, 0xFE }))
+            {
+                try { lastText = new UnicodeEncoding(false, false, true).GetString(data, 2, data.Length - 2); textEncoding = TextEncodingKind.Utf16LE; }
+                catch { lastText = Encoding.Unicode.GetString(data, 2, data.Length - 2); textEncoding = TextEncodingKind.Lossy; }
+            }
+            else if (data.AsSpan().StartsWith(new byte[] { 0xFE, 0xFF }))
+            {
+                try { lastText = new UnicodeEncoding(true, false, true).GetString(data, 2, data.Length - 2); textEncoding = TextEncodingKind.Utf16BE; }
+                catch { lastText = Encoding.BigEndianUnicode.GetString(data, 2, data.Length - 2); textEncoding = TextEncodingKind.Lossy; }
+            }
+            else
+            {
+                try { lastText = new UTF8Encoding(false, true).GetString(data); textEncoding = TextEncodingKind.Utf8; }
+                catch { lastText = Encoding.UTF8.GetString(data); textEncoding = TextEncodingKind.Lossy; }
+            }
+            newlineKind = DetectNewlines(lastText);
+            hasValidTextSnapshot = true;
+            lastDiskFingerprint = DiskFingerprint.FromData(FilePath, data);
+            lastModified = new DateTime(lastDiskFingerprint.ModifiedTicks, DateTimeKind.Utc);
+        }
+        catch { }
+    }
+
+    static NewlineKind DetectNewlines(string text)
+    {
+        var rest = text.Replace("\r\n", "");
+        var crlf = text.Contains("\r\n");
+        var lf = rest.Contains('\n');
+        var cr = rest.Contains('\r');
+        if ((crlf ? 1 : 0) + (lf ? 1 : 0) + (cr ? 1 : 0) > 1) return NewlineKind.Mixed;
+        if (crlf) return NewlineKind.CrLf;
+        if (cr) return NewlineKind.Cr;
+        return NewlineKind.Lf;
     }
 
     DateTime? ModificationDate()
@@ -274,7 +509,7 @@ sealed class ViewerTab : TabPage
     {
         if (IsDirty) return;
         var current = ModificationDate();
-        if (current.HasValue && current != lastModified)
+        if (current != lastModified)
         {
             lastModified = current;
             RenderAndLoad();
@@ -285,6 +520,7 @@ sealed class ViewerTab : TabPage
 
     void OnWebMessage(object sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
+        if (!IsTrustedPage(e.Source)) return;
         JsonDocument doc;
         try { doc = JsonDocument.Parse(e.WebMessageAsJson); }
         catch { return; }
@@ -404,8 +640,18 @@ sealed class ViewerTab : TabPage
             Title = "Save Markdown File",
         };
         if (dlg.ShowDialog(host) != DialogResult.OK) return false;
-        FilePath = Path.GetFullPath(dlg.FileName);
-        if (!WriteToDisk()) return false;
+        var target = Path.GetFullPath(dlg.FileName);
+        if (host.ActivateIfOpen(target, this))
+        {
+            MessageBox.Show("Close the other tab before saving to the same path.",
+                "That file is already open", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+        var sameAsCurrent = FilePath != null && string.Equals(
+            CanonicalLocalPath(FilePath), CanonicalLocalPath(target),
+            StringComparison.OrdinalIgnoreCase);
+        if (!WriteToDisk(target, checkConflict: sameAsCurrent)) return false;
+        FilePath = target;
         ToolTipText = FilePath;
         host.UpdateTitle();
         StartWatching();
@@ -418,28 +664,119 @@ sealed class ViewerTab : TabPage
     }
 
     /// Writes the latest editor text back to the markdown file on disk.
-    bool WriteToDisk()
+    bool WriteToDisk(string targetPath = null, bool checkConflict = true)
     {
-        if (FilePath == null) return false;
+        var target = targetPath ?? FilePath;
+        if (target == null) return false;
+        if (!hasValidTextSnapshot)
+        {
+            MessageBox.Show("Fix access to the original file and reload it before saving a copy.",
+                "There is no readable document content to save", MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return false;
+        }
+        if (checkConflict)
+        {
+            var current = DiskFingerprint.Read(target);
+            if (current != lastDiskFingerprint)
+            {
+                var message = current == null
+                    ? "The file was removed or is no longer readable. Saving now will recreate it."
+                    : "The file changed outside MarkdownViewer. Saving now will overwrite that change.";
+                if (MessageBox.Show(message, "File changed on disk", MessageBoxButtons.OKCancel,
+                    MessageBoxIcon.Warning) != DialogResult.OK) return false;
+            }
+            else if (!IsDirty) return true;
+        }
+        var outputEncoding = textEncoding;
+        var outputNewline = newlineKind;
+        if (outputEncoding == TextEncodingKind.Lossy || outputNewline == NewlineKind.Mixed)
+        {
+            var savingCopy = targetPath != null && (FilePath == null || !string.Equals(
+                CanonicalLocalPath(FilePath), CanonicalLocalPath(target),
+                StringComparison.OrdinalIgnoreCase));
+            var message = outputEncoding == TextEncodingKind.Lossy && outputNewline == NewlineKind.Mixed
+                ? savingCopy
+                    ? "This file has an unknown encoding and mixed line endings. Save a UTF-8 copy with LF line endings?"
+                    : "This file has an unknown encoding and mixed line endings. Convert to UTF-8/LF and overwrite it?"
+                : outputEncoding == TextEncodingKind.Lossy
+                    ? savingCopy
+                        ? "This file is not valid UTF-8/UTF-16/UTF-32. Save a UTF-8 copy?"
+                        : "This file is not valid UTF-8/UTF-16/UTF-32. Convert to UTF-8 and overwrite it?"
+                    : "This file mixes line-ending styles. Save with LF line endings?";
+            if (MessageBox.Show(message, "Format conversion required", MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning) != DialogResult.OK) return false;
+            if (outputEncoding == TextEncodingKind.Lossy) outputEncoding = TextEncodingKind.Utf8;
+            if (outputNewline == NewlineKind.Mixed) outputNewline = NewlineKind.Lf;
+        }
         try
         {
             // Preserve the file's original line endings: the editor always
             // hands back LF, so normalize first, then re-apply CRLF if that's
             // what the file used.
-            var text = lastText.Replace("\r\n", "\n");
-            if (usesCrLf) text = text.Replace("\n", "\r\n");
-            File.WriteAllText(FilePath, text, new UTF8Encoding(false));
+            var text = lastText.Replace("\r\n", "\n").Replace("\r", "\n");
+            if (outputNewline == NewlineKind.CrLf) text = text.Replace("\n", "\r\n");
+            else if (outputNewline == NewlineKind.Cr) text = text.Replace("\n", "\r");
+            byte[] body;
+            byte[] bom = Array.Empty<byte>();
+            switch (outputEncoding)
+            {
+                case TextEncodingKind.Utf8: body = new UTF8Encoding(false).GetBytes(text); break;
+                case TextEncodingKind.Utf8Bom:
+                    bom = new byte[] { 0xEF, 0xBB, 0xBF }; body = new UTF8Encoding(false).GetBytes(text); break;
+                case TextEncodingKind.Utf16LE:
+                    bom = new byte[] { 0xFF, 0xFE }; body = Encoding.Unicode.GetBytes(text); break;
+                case TextEncodingKind.Utf16BE:
+                    bom = new byte[] { 0xFE, 0xFF }; body = Encoding.BigEndianUnicode.GetBytes(text); break;
+                case TextEncodingKind.Utf32LE:
+                    bom = new byte[] { 0xFF, 0xFE, 0x00, 0x00 }; body = new UTF32Encoding(false, false).GetBytes(text); break;
+                case TextEncodingKind.Utf32BE:
+                    bom = new byte[] { 0x00, 0x00, 0xFE, 0xFF }; body = new UTF32Encoding(true, false).GetBytes(text); break;
+                default: return false;
+            }
+            var data = new byte[bom.Length + body.Length];
+            Buffer.BlockCopy(bom, 0, data, 0, bom.Length);
+            Buffer.BlockCopy(body, 0, data, bom.Length, body.Length);
+            WriteAtomically(target, data);
             // Treat our own write as already-seen so the poll doesn't reload it.
-            lastModified = ModificationDate();
+            lastModified = File.GetLastWriteTimeUtc(target);
+            lastDiskFingerprint = DiskFingerprint.Read(target);
+            textEncoding = outputEncoding;
+            newlineKind = outputNewline;
             SetDirty(false);
             RunJS("window.__onSaved && window.__onSaved()");
             return true;
         }
         catch (Exception e)
         {
-            MessageBox.Show($"{FilePath}\n\n{e.Message}", "Could not save the file.",
+            MessageBox.Show($"{target}\n\n{e.Message}", "Could not save the file.",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
+        }
+    }
+
+    static void WriteAtomically(string target, byte[] data)
+    {
+        var directory = Path.GetDirectoryName(Path.GetFullPath(target)) ?? Path.GetTempPath();
+        var temp = Path.Combine(directory, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write,
+                       FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                stream.Write(data, 0, data.Length);
+                stream.Flush(true);
+            }
+            if (File.Exists(target))
+            {
+                try { File.Replace(temp, target, null, true); }
+                catch (PlatformNotSupportedException) { File.Move(temp, target, true); }
+            }
+            else File.Move(temp, target);
+        }
+        finally
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
         }
     }
 
@@ -479,8 +816,19 @@ sealed class ViewerTab : TabPage
     /// File ▸ Print… (Ctrl+P): the browser print dialog on the rendered
     /// preview (print CSS hides the toolbar/editor); "Save as PDF" there
     /// doubles as PDF export.
-    public void PrintDoc()
+    public async void PrintDoc()
     {
+        try
+        {
+            await web.CoreWebView2.ExecuteScriptAsync("window.__preparePrint && window.__preparePrint()");
+            for (var i = 0; i < 200; i++)
+            {
+                var ready = await web.CoreWebView2.ExecuteScriptAsync("window.__printReady !== false");
+                if (string.Equals(ready, "true", StringComparison.OrdinalIgnoreCase)) break;
+                await Task.Delay(25);
+            }
+        }
+        catch { }
         try { web.CoreWebView2?.ShowPrintUI(CoreWebView2PrintDialogKind.Browser); } catch { }
     }
 
@@ -613,13 +961,25 @@ sealed class MainForm : Form
     public ViewerTab ActiveTab => tabs.SelectedTab as ViewerTab;
     ViewerTab Current => ActiveTab;
 
+    public bool ActivateIfOpen(string path, ViewerTab excluded = null)
+    {
+        var full = ViewerTab.CanonicalLocalPath(path);
+        foreach (ViewerTab tab in tabs.TabPages)
+            if (tab != excluded && tab.FilePath != null &&
+                string.Equals(ViewerTab.CanonicalLocalPath(tab.FilePath), full,
+                    StringComparison.OrdinalIgnoreCase))
+            { tabs.SelectedTab = tab; return true; }
+        return false;
+    }
+
     public async void OpenFile(string path) => await OpenFileAsync(path);
 
     public async Task OpenFileAsync(string path, bool noteAsRecent = true)
     {
-        var full = Path.GetFullPath(path);
+        var full = ViewerTab.CanonicalLocalPath(path);
         foreach (ViewerTab t in tabs.TabPages)
-            if (t.FilePath != null && string.Equals(t.FilePath, full, StringComparison.OrdinalIgnoreCase))
+            if (t.FilePath != null && string.Equals(ViewerTab.CanonicalLocalPath(t.FilePath), full,
+                StringComparison.OrdinalIgnoreCase))
             {
                 tabs.SelectedTab = t;
                 return;

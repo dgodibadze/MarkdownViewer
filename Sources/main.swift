@@ -1,13 +1,14 @@
 import Cocoa
 import WebKit
 import UniformTypeIdentifiers
+import CryptoKit
+import Darwin
 
 // MARK: - Markdown rendering
 
 /// Builds the full HTML document for a markdown file by substituting tokens
-/// in the bundled template. Asset CSS/JS are referenced via absolute file URLs
-/// into the app's Resources directory; relative images in the markdown resolve
-/// against the markdown file's own directory via <base href>.
+/// in the bundled template. Assets and document-relative files use separate,
+/// scoped URL handlers rather than filesystem-wide file URLs.
 enum Renderer {
     static func templateURL() -> URL? {
         return Bundle.main.url(forResource: "template", withExtension: "html")
@@ -20,7 +21,7 @@ enum Renderer {
     /// Renders the markdown file (or an empty untitled document when `markdownFile`
     /// is nil) into `tempFile`.
     /// Returns nil on success, or a human-readable error string on failure.
-    static func render(markdownFile: URL?, into tempFile: URL) -> String? {
+    static func render(markdownFile: URL?, markdownText: String, into tempFile: URL) -> String? {
         guard let tplURL = templateURL() else {
             return "Bundled template.html not found in app Resources."
         }
@@ -28,39 +29,26 @@ enum Renderer {
             return "Could not read bundled template at \(tplURL.path)."
         }
 
-        // Read the markdown. Try UTF-8, then fall back to a lossy decode so odd
-        // encodings still display instead of failing outright.
-        let mdText: String
-        if let markdownFile = markdownFile {
-            do {
-                mdText = try String(contentsOf: markdownFile, encoding: .utf8)
-            } catch {
-                if let data = try? Data(contentsOf: markdownFile) {
-                    mdText = String(decoding: data, as: UTF8.self)
-                } else {
-                    return "Could not read the markdown file.\n\(error.localizedDescription)"
-                }
-            }
-        } else {
-            mdText = ""
-        }
-
-        // Resources directory as a file:// URL string (assets live here).
-        let resDir = resourcesDirURL().absoluteString.trimmingTrailingSlash()
-        // Markdown file's directory for resolving relative images/links.
-        // Untitled documents have no directory yet — use home as a placeholder.
-        let baseDir = (markdownFile?.deletingLastPathComponent()
-            ?? FileManager.default.homeDirectoryForCurrentUser).absoluteString
+        // Assets and document-relative files are served by narrowly scoped
+        // WKURLSchemeHandlers. The rendered page itself only receives read
+        // access to its private temporary directory, never the filesystem root.
+        let resDir = "mdv-resource://bundle"
+        let baseDir = "mdv-document://local/"
         let title = markdownFile?.lastPathComponent ?? "Untitled"
 
         // __MARKDOWN__ must be substituted LAST: it injects arbitrary document
         // text, and any token replaced after it would also match occurrences of
         // that token *inside* the document (e.g. a markdown file that mentions
         // "__TITLE__" literally would get corrupted).
+        // Reserve the Markdown slot before inserting any external value. This
+        // keeps a filename such as "notes__MARKDOWN__.md" from being rescanned
+        // and replaced with the entire document during the final substitution.
+        let markdownSlot = "__MDV_MARKDOWN_SLOT_\(UUID().uuidString)__"
+        template = template.replacingOccurrences(of: "__MARKDOWN__", with: markdownSlot)
         template = template.replacingOccurrences(of: "__RES__", with: resDir)
         template = template.replacingOccurrences(of: "__BASE__", with: baseDir)
         template = template.replacingOccurrences(of: "__TITLE__", with: htmlEscape(title))
-        template = template.replacingOccurrences(of: "__MARKDOWN__", with: jsStringLiteral(mdText))
+        template = template.replacingOccurrences(of: markdownSlot, with: jsStringLiteral(markdownText))
 
         // Ensure the temp directory exists, then write. Report the real error.
         do {
@@ -104,11 +92,144 @@ enum Renderer {
     }
 }
 
-private extension String {
-    func trimmingTrailingSlash() -> String {
-        var s = self
-        while s.hasSuffix("/") { s.removeLast() }
-        return s
+// MARK: - Scoped local-resource loading
+
+/// Serves a single local directory through a private URL scheme. Resolving the
+/// target and checking it again after symlink resolution prevents `..` and
+/// symlink escapes from broadening the web view's filesystem access.
+final class LocalFileSchemeHandler: NSObject, WKURLSchemeHandler {
+    private static let maxResourceBytes = 64 * 1024 * 1024
+    private var root: URL
+    private let stateLock = NSLock()
+    private var activeTasks = Set<ObjectIdentifier>()
+
+    init(root: URL) {
+        self.root = root.standardizedFileURL.resolvingSymlinksInPath()
+        super.init()
+    }
+
+    func updateRoot(_ url: URL) {
+        stateLock.lock()
+        root = url.standardizedFileURL.resolvingSymlinksInPath()
+        stateLock.unlock()
+    }
+
+    func localURL(for requestURL: URL) -> URL? {
+        // URL.path is already percent-decoded by Foundation. Decoding a second
+        // time would misresolve legitimate names containing a literal "%20".
+        let relative = requestURL.path
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        stateLock.lock()
+        let rootSnapshot = root
+        stateLock.unlock()
+        let candidate = rootSnapshot.appendingPathComponent(relative)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        let rootPath = rootSnapshot.path.hasSuffix("/") ? rootSnapshot.path : rootSnapshot.path + "/"
+        guard candidate.path == rootSnapshot.path || candidate.path.hasPrefix(rootPath) else { return nil }
+        return candidate
+    }
+
+    func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
+        let taskID = ObjectIdentifier(urlSchemeTask as AnyObject)
+        stateLock.lock()
+        activeTasks.insert(taskID)
+        stateLock.unlock()
+        guard let requestURL = urlSchemeTask.request.url,
+              let fileURL = localURL(for: requestURL) else {
+            fail(urlSchemeTask, id: taskID, code: .fileDoesNotExist)
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let descriptor = open(fileURL.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW)
+            guard descriptor >= 0 else {
+                self.failOnMain(urlSchemeTask, id: taskID, code: .fileDoesNotExist)
+                return
+            }
+            let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+            defer { try? handle.close() }
+            var info = stat()
+            guard fstat(descriptor, &info) == 0,
+                  (info.st_mode & S_IFMT) == S_IFREG,
+                  info.st_size >= 0,
+                  info.st_size <= Self.maxResourceBytes else {
+                self.failOnMain(urlSchemeTask, id: taskID, code: .dataLengthExceedsMaximum)
+                return
+            }
+            do {
+                let expectedSize = Int(info.st_size)
+                var data = Data()
+                while data.count <= Self.maxResourceBytes {
+                    guard self.isTaskActive(taskID) else { return }
+                    let count = min(1024 * 1024, Self.maxResourceBytes + 1 - data.count)
+                    if count <= 0 { break }
+                    guard let chunk = try handle.read(upToCount: count), !chunk.isEmpty else { break }
+                    data.append(chunk)
+                }
+                guard data.count <= Self.maxResourceBytes, data.count == expectedSize else {
+                    self.failOnMain(urlSchemeTask, id: taskID, code: .dataLengthExceedsMaximum)
+                    return
+                }
+                let mime = UTType(filenameExtension: fileURL.pathExtension)?.preferredMIMEType
+                    ?? "application/octet-stream"
+                DispatchQueue.main.async {
+                    guard self.takeTask(taskID) else { return }
+                    let response = URLResponse(url: requestURL, mimeType: mime,
+                                               expectedContentLength: data.count,
+                                               textEncodingName: nil)
+                    urlSchemeTask.didReceive(response)
+                    urlSchemeTask.didReceive(data)
+                    urlSchemeTask.didFinish()
+                }
+            } catch {
+                self.failOnMain(urlSchemeTask, id: taskID, code: .cannotOpenFile)
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
+        _ = takeTask(ObjectIdentifier(urlSchemeTask as AnyObject))
+    }
+
+    private func takeTask(_ id: ObjectIdentifier) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return activeTasks.remove(id) != nil
+    }
+
+    private func isTaskActive(_ id: ObjectIdentifier) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return activeTasks.contains(id)
+    }
+
+    private func fail(_ task: WKURLSchemeTask, id: ObjectIdentifier, code: URLError.Code) {
+        guard takeTask(id) else { return }
+        task.didFailWithError(URLError(code))
+    }
+
+    private func failOnMain(_ task: WKURLSchemeTask, id: ObjectIdentifier,
+                            code: URLError.Code) {
+        DispatchQueue.main.async { self.fail(task, id: id, code: code) }
+    }
+}
+
+private struct DiskFingerprint: Equatable {
+    let size: Int
+    let modified: Date?
+    let sha256: Data
+
+    static func read(_ url: URL) -> DiskFingerprint? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return make(data: data, url: url)
+    }
+
+    static func make(data: Data, url: URL) -> DiskFingerprint {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return DiskFingerprint(
+            size: data.count,
+            modified: attrs?[.modificationDate] as? Date,
+            sha256: Data(SHA256.hash(data: data)))
     }
 }
 
@@ -120,7 +241,7 @@ private extension String {
 final class DropWebView: WKWebView {
     var onFileDrop: (([URL]) -> Bool)?
 
-    private static let mdExtensions: Set<String> = [
+    static let mdExtensions: Set<String> = [
         "md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "markdn",
         "mdtxt", "text", "txt", "rmd", "qmd", "mdx", "mdc"]
 
@@ -151,6 +272,10 @@ final class DropWebView: WKWebView {
 // MARK: - Viewer window
 
 final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WKScriptMessageHandler {
+    private enum TextEncodingKind: Equatable {
+        case utf8, utf8BOM, utf16LE, utf16BE, utf32LE, utf32BE, lossy
+    }
+    private enum NewlineKind: Equatable { case lf, crlf, cr, mixed }
     private static var isFirstWindow = true
     private static var cascadePoint = NSPoint.zero
 
@@ -159,18 +284,22 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     private(set) var fileURL: URL?
     private var webView: WKWebView!
     private let tempFile: URL
+    private var resourceSchemeHandler: LocalFileSchemeHandler?
+    private var documentSchemeHandler: LocalFileSchemeHandler?
     private var watchTimer: Timer?
     private var lastModified: Date?
+    private var lastDiskFingerprint: DiskFingerprint?
+    private var textEncoding: TextEncodingKind = .utf8
+    private var newlineKind: NewlineKind = .lf
 
     /// True when the in-page editor has unsaved changes. While dirty, the
     /// external-change live-reload is suspended so it can't clobber edits.
     private(set) var isDirty = false
     /// Latest editor text pushed from the page, used for menu/close-triggered saves.
     private var lastText: String = ""
-    /// True when the file on disk used CRLF line endings. The textarea's
-    /// `value` is LF-normalized by the HTML spec, so without re-applying CRLF
-    /// on save a one-character edit would silently rewrite every line ending.
-    private var usesCRLF = false
+    /// False only when a file-backed document has never yielded readable bytes.
+    /// Prevents Save As from turning an initial read-error page into an empty file.
+    private var hasValidTextSnapshot = false
     /// Mode to force once the page finishes loading (e.g. "split" for new
     /// documents). Calling __setMode before the page loads is a silent no-op,
     /// so this is applied from didFinish instead.
@@ -180,6 +309,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
 
     init(fileURL: URL?) {
         self.fileURL = fileURL?.resolvingSymlinksInPath()
+        self.hasValidTextSnapshot = self.fileURL == nil
         let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("MarkdownViewer", isDirectory: true)
         try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -210,6 +340,13 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
 
         let config = WKWebViewConfiguration()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
+        let resourceHandler = LocalFileSchemeHandler(root: Renderer.resourcesDirURL())
+        let documentHandler = LocalFileSchemeHandler(root:
+            self.fileURL?.deletingLastPathComponent() ?? tempFile.deletingLastPathComponent())
+        resourceSchemeHandler = resourceHandler
+        documentSchemeHandler = documentHandler
+        config.setURLSchemeHandler(resourceHandler, forURLScheme: "mdv-resource")
+        config.setURLSchemeHandler(documentHandler, forURLScheme: "mdv-document")
         let ucc = WKUserContentController()
         config.userContentController = ucc
         let dropView = DropWebView(frame: window.contentView!.bounds, configuration: config)
@@ -232,30 +369,114 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     required init?(coder: NSCoder) { fatalError("init(coder:) not used") }
 
     private func renderAndLoad() {
-        if let err = Renderer.render(markdownFile: fileURL, into: tempFile) {
+        var renderError: String?
+        if let fileURL = fileURL {
+            do {
+                // One byte snapshot drives the editor text, rendered preview,
+                // and conflict baseline. A concurrent write can no longer put
+                // old text on screen while blessing newer bytes as the baseline.
+                let data = try Data(contentsOf: fileURL)
+                seedTextFormat(from: data)
+                hasValidTextSnapshot = true
+                let fingerprint = DiskFingerprint.make(data: data, url: fileURL)
+                lastDiskFingerprint = fingerprint
+                lastModified = fingerprint.modified
+            } catch {
+                renderError = "Could not read the markdown file.\n\(error.localizedDescription)"
+            }
+        }
+        if renderError == nil {
+            renderError = Renderer.render(
+                markdownFile: fileURL, markdownText: lastText, into: tempFile)
+        }
+        if let err = renderError {
             let safe = err
                 .replacingOccurrences(of: "&", with: "&amp;")
                 .replacingOccurrences(of: "<", with: "&lt;")
+                .replacingOccurrences(of: ">", with: "&gt;")
+            let safePath = Renderer.htmlEscape(fileURL?.path ?? "Untitled")
             let html = "<html><body style='font-family:-apple-system,sans-serif;padding:2rem;white-space:pre-wrap'>"
                 + "<h3>MarkdownViewer could not render</h3>"
-                + "<b>File:</b> \(fileURL?.path ?? "Untitled")<br><br>\(safe)</body></html>"
+                + "<b>File:</b> \(safePath)<br><br>\(safe)</body></html>"
             webView.loadHTMLString(html, baseURL: nil)
             // Mark the current mtime as seen even on failure — otherwise the
             // 1 Hz watcher re-renders the error page every second, forever.
             lastModified = modificationDate()
             return
         }
-        // Allow read access to "/" so the bundled assets (in Resources) and any
-        // local images referenced by the markdown can both load.
-        webView.loadFileURL(tempFile, allowingReadAccessTo: URL(fileURLWithPath: "/"))
-        lastModified = modificationDate()
-        // Seed the save cache with what's actually on disk. Without this, a
-        // menu-triggered Save before any edit would write "" and wipe the file;
-        // after an external-change reload it would silently revert the file.
-        if let fileURL = fileURL, let data = try? Data(contentsOf: fileURL) {
+        // The page may read only its private render directory. Bundled assets
+        // and document-relative files go through the scoped scheme handlers.
+        webView.loadFileURL(tempFile, allowingReadAccessTo: tempFile.deletingLastPathComponent())
+        // File-backed documents already recorded the snapshot mtime above;
+        // Untitled documents have no watcher baseline.
+        if fileURL == nil { lastModified = nil }
+    }
+
+    private func seedTextFormat(from data: Data) {
+        if data.starts(with: [0xEF, 0xBB, 0xBF]) {
+            if let decoded = String(data: data.dropFirst(3), encoding: .utf8) {
+                textEncoding = .utf8BOM
+                lastText = decoded
+            } else {
+                textEncoding = .lossy
+                lastText = String(decoding: data.dropFirst(3), as: UTF8.self)
+            }
+        } else if data.starts(with: [0xFF, 0xFE, 0x00, 0x00]) {
+            if (data.count - 4).isMultiple(of: 4),
+               let decoded = String(data: data.dropFirst(4), encoding: .utf32LittleEndian) {
+                textEncoding = .utf32LE
+                lastText = decoded
+            } else {
+                textEncoding = .lossy
+                lastText = String(decoding: data.dropFirst(4), as: UTF8.self)
+            }
+        } else if data.starts(with: [0x00, 0x00, 0xFE, 0xFF]) {
+            if (data.count - 4).isMultiple(of: 4),
+               let decoded = String(data: data.dropFirst(4), encoding: .utf32BigEndian) {
+                textEncoding = .utf32BE
+                lastText = decoded
+            } else {
+                textEncoding = .lossy
+                lastText = String(decoding: data.dropFirst(4), as: UTF8.self)
+            }
+        } else if data.starts(with: [0xFF, 0xFE]) {
+            if (data.count - 2).isMultiple(of: 2),
+               let decoded = String(data: data.dropFirst(2), encoding: .utf16LittleEndian) {
+                textEncoding = .utf16LE
+                lastText = decoded
+            } else {
+                textEncoding = .lossy
+                lastText = String(decoding: data.dropFirst(2), as: UTF8.self)
+            }
+        } else if data.starts(with: [0xFE, 0xFF]) {
+            if (data.count - 2).isMultiple(of: 2),
+               let decoded = String(data: data.dropFirst(2), encoding: .utf16BigEndian) {
+                textEncoding = .utf16BE
+                lastText = decoded
+            } else {
+                textEncoding = .lossy
+                lastText = String(decoding: data.dropFirst(2), as: UTF8.self)
+            }
+        } else if let decoded = String(data: data, encoding: .utf8) {
+            textEncoding = .utf8
+            lastText = decoded
+        } else {
+            textEncoding = .lossy
             lastText = String(decoding: data, as: UTF8.self)
-            usesCRLF = lastText.contains("\r\n")
         }
+        newlineKind = detectNewlineKind(lastText)
+    }
+
+    private func detectNewlineKind(_ text: String) -> NewlineKind {
+        let withoutCRLF = text.replacingOccurrences(of: "\r\n", with: "")
+        let hasCRLF = text.contains("\r\n")
+        let hasLF = withoutCRLF.contains("\n")
+        let hasCR = withoutCRLF.contains("\r")
+        let kinds = [hasCRLF, hasLF, hasCR].filter { $0 }.count
+        if kinds > 1 { return .mixed }
+        if hasCRLF { return .crlf }
+        if hasCR { return .cr }
+        return .lf
     }
 
     private func modificationDate() -> Date? {
@@ -273,7 +494,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
             // Suspend reload while there are unsaved edits so we never clobber them.
             if self.isDirty { return }
             let current = self.modificationDate()
-            if let current = current, current != self.lastModified {
+            if current != self.lastModified {
                 self.lastModified = current
                 self.renderAndLoad()
             }
@@ -285,6 +506,9 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     /// Receives messages posted from the page's `bridge` message handler.
     func userContentController(_ userContentController: WKUserContentController,
                               didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame,
+              let sourceURL = message.frameInfo.request.url,
+              isTrustedPageURL(sourceURL) else { return }
         guard let body = message.body as? [String: Any],
               let action = body["action"] as? String else { return }
         switch action {
@@ -351,12 +575,27 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         panel.canCreateDirectories = true
         panel.beginSheetModal(for: window) { resp in
             guard resp == .OK, let url = panel.url else { completion?(false); return }
-            self.fileURL = url.resolvingSymlinksInPath()
-            let ok = self.writeToDisk()
+            let target = url.resolvingSymlinksInPath()
+            if let delegate = NSApp.delegate as? AppDelegate,
+               let existing = delegate.existingController(for: target, excluding: self) {
+                existing.window?.makeKeyAndOrderFront(nil)
+                let alert = NSAlert()
+                alert.messageText = "That file is already open."
+                alert.informativeText = "Close the other window before saving to the same path."
+                alert.runModal()
+                completion?(false)
+                return
+            }
+            let sameAsCurrent = self.fileURL.map {
+                self.canonicalPath($0) == self.canonicalPath(target)
+            } ?? false
+            let ok = self.writeToDisk(to: target, checkConflict: sameAsCurrent)
             if ok {
+                self.fileURL = target
                 self.window?.title = self.displayName
                 self.window?.representedURL = self.fileURL
                 self.startWatching()
+                self.updateDocumentSchemeRoot()
                 // Re-render so <base href> points at the real folder (relative
                 // images now resolve) — editor content equals what was saved.
                 self.renderAndLoad()
@@ -366,19 +605,106 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         }
     }
 
+    private func updateDocumentSchemeRoot() {
+        let root = fileURL?.deletingLastPathComponent() ?? tempFile.deletingLastPathComponent()
+        documentSchemeHandler?.updateRoot(root)
+    }
+
+    private func canonicalPath(_ url: URL) -> String {
+        return (try? url.resourceValues(forKeys: [.canonicalPathKey]))?.canonicalPath
+            ?? url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
     /// Writes the latest editor text back to the markdown file on disk.
     @discardableResult
-    private func writeToDisk() -> Bool {
-        guard let fileURL = fileURL else { return false }
+    private func writeToDisk(to targetURL: URL? = nil, checkConflict: Bool = true) -> Bool {
+        guard let target = targetURL ?? fileURL else { return false }
+        guard hasValidTextSnapshot else {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "There is no readable document content to save."
+            alert.informativeText = "Fix access to the original file and reload it before saving a copy."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return false
+        }
+        if checkConflict {
+            let current = DiskFingerprint.read(target)
+            if current != lastDiskFingerprint {
+                let alert = NSAlert()
+                alert.alertStyle = .critical
+                alert.messageText = current == nil
+                    ? "The file was removed or is no longer readable."
+                    : "The file changed outside MarkdownViewer."
+                alert.informativeText = "Saving now will overwrite the external change."
+                alert.addButton(withTitle: "Save Anyway")
+                alert.addButton(withTitle: "Cancel")
+                guard alert.runModal() == .alertFirstButtonReturn else { return false }
+            } else if !isDirty {
+                // A clean save is already durable; avoid rewriting BOMs,
+                // encodings, permissions, or timestamps for no reason.
+                return true
+            }
+        }
+        var outputEncoding = textEncoding
+        var outputNewline = newlineKind
+        if outputEncoding == .lossy || outputNewline == .mixed {
+            let savingCopy = targetURL != nil && (fileURL.map {
+                canonicalPath($0) != canonicalPath(target)
+            } ?? true)
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "Saving requires a format conversion."
+            if outputEncoding == .lossy && outputNewline == .mixed {
+                alert.informativeText = savingCopy
+                    ? "This file has an unknown encoding and mixed line endings. Save a UTF-8 copy with LF line endings?"
+                    : "This file has an unknown encoding and mixed line endings. Convert to UTF-8/LF and overwrite it?"
+            } else if outputEncoding == .lossy {
+                alert.informativeText = savingCopy
+                    ? "This file is not valid UTF-8/UTF-16/UTF-32. Save a UTF-8 copy?"
+                    : "This file is not valid UTF-8/UTF-16/UTF-32. Convert to UTF-8 and overwrite it?"
+            } else {
+                alert.informativeText = "This file mixes line-ending styles. Save with LF line endings?"
+            }
+            alert.addButton(withTitle: outputEncoding == .lossy
+                ? (savingCopy ? "Save as UTF-8" : "Convert and Save")
+                : "Save with LF")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return false }
+            if outputEncoding == .lossy { outputEncoding = .utf8 }
+            if outputNewline == .mixed { outputNewline = .lf }
+        }
         do {
-            // Preserve the file's original line endings: the editor always
-            // hands back LF, so normalize first, then re-apply CRLF if that's
-            // what the file used.
             var text = lastText.replacingOccurrences(of: "\r\n", with: "\n")
-            if usesCRLF { text = text.replacingOccurrences(of: "\n", with: "\r\n") }
-            try text.write(to: fileURL, atomically: true, encoding: .utf8)
+                .replacingOccurrences(of: "\r", with: "\n")
+            if outputNewline == .crlf { text = text.replacingOccurrences(of: "\n", with: "\r\n") }
+            if outputNewline == .cr { text = text.replacingOccurrences(of: "\n", with: "\r") }
+            let data: Data
+            switch outputEncoding {
+            case .utf8:
+                data = text.data(using: .utf8) ?? Data()
+            case .utf8BOM:
+                data = Data([0xEF, 0xBB, 0xBF]) + (text.data(using: .utf8) ?? Data())
+            case .utf16LE:
+                data = Data([0xFF, 0xFE]) + (text.data(using: .utf16LittleEndian) ?? Data())
+            case .utf16BE:
+                data = Data([0xFE, 0xFF]) + (text.data(using: .utf16BigEndian) ?? Data())
+            case .utf32LE:
+                data = Data([0xFF, 0xFE, 0x00, 0x00])
+                    + (text.data(using: .utf32LittleEndian) ?? Data())
+            case .utf32BE:
+                data = Data([0x00, 0x00, 0xFE, 0xFF])
+                    + (text.data(using: .utf32BigEndian) ?? Data())
+            case .lossy:
+                return false
+            }
+            try data.write(to: target, options: .atomic)
             // Treat our own write as already-seen so the poll doesn't reload it.
-            lastModified = modificationDate()
+            let attrs = try? FileManager.default.attributesOfItem(atPath: target.path)
+            lastModified = attrs?[.modificationDate] as? Date
+            lastDiskFingerprint = DiskFingerprint.read(target)
+            textEncoding = outputEncoding
+            newlineKind = outputNewline
             isDirty = false
             window?.isDocumentEdited = false
             webView.evaluateJavaScript("window.__onSaved && window.__onSaved()")
@@ -387,7 +713,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Could not save the file."
-            alert.informativeText = "\(fileURL.path)\n\n\(error.localizedDescription)"
+            alert.informativeText = "\(target.path)\n\n\(error.localizedDescription)"
             alert.addButton(withTitle: "OK")
             alert.runModal()
             return false
@@ -425,6 +751,24 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     /// template hides the toolbar/editor). "Save as PDF" in the print panel
     /// doubles as PDF export.
     func printDocument() {
+        webView.evaluateJavaScript("window.__preparePrint && window.__preparePrint()") { _, _ in
+            self.waitForPrintPreparation(remainingChecks: 200)
+        }
+    }
+
+    private func waitForPrintPreparation(remainingChecks: Int) {
+        webView.evaluateJavaScript("window.__printReady !== false") { value, error in
+            if error != nil || (value as? Bool) == true || remainingChecks <= 0 {
+                self.runPrintOperation()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+                self.waitForPrintPreparation(remainingChecks: remainingChecks - 1)
+            }
+        }
+    }
+
+    private func runPrintOperation() {
         let info = NSPrintInfo()
         info.horizontalPagination = .fit
         info.verticalPagination = .automatic
@@ -480,15 +824,42 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
             decisionHandler(.allow)
             return
         }
-        if scheme == "file" || scheme == "about" {
+        if isTrustedPageURL(url) || (scheme == "about" && url.absoluteString == "about:blank") {
             decisionHandler(.allow)
             return
         }
-        if navigationAction.navigationType == .linkActivated,
-           scheme == "http" || scheme == "https" || scheme == "mailto" {
-            NSWorkspace.shared.open(url)
+        if navigationAction.navigationType == .linkActivated {
+            if scheme == "http" || scheme == "https" || scheme == "mailto" {
+                NSWorkspace.shared.open(url)
+            } else if scheme == "mdv-document",
+                      let localURL = documentSchemeHandler?.localURL(for: url) {
+                let markdownExtensions = DropWebView.mdExtensions
+                if markdownExtensions.contains(localURL.pathExtension.lowercased()) {
+                    (NSApp.delegate as? AppDelegate)?.openFile(localURL)
+                } else if isSafeLocalOpen(localURL) {
+                    NSWorkspace.shared.open(localURL)
+                } else {
+                    // Never hand an untrusted executable-capable local link to
+                    // Launch Services. Reveal it so the user can inspect it.
+                    NSWorkspace.shared.activateFileViewerSelecting([localURL])
+                }
+            }
         }
         decisionHandler(.cancel)
+    }
+
+    private func isSafeLocalOpen(_ url: URL) -> Bool {
+        let safeExtensions: Set<String> = [
+            "bmp", "csv", "gif", "heic", "jpeg", "jpg", "json", "log",
+            "m4a", "mov", "mp3", "mp4", "pdf", "png", "rtf", "tif",
+            "tiff", "tsv", "txt", "wav", "webp"
+        ]
+        return safeExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    private func isTrustedPageURL(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        return canonicalPath(url) == canonicalPath(tempFile)
     }
 }
 
@@ -537,6 +908,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     /// volumes) so "README.md" and "readme.md" dedupe to one window.
     private func canonicalPath(_ url: URL) -> String {
         return (try? url.resourceValues(forKeys: [.canonicalPathKey]))?.canonicalPath ?? url.path
+    }
+
+    func existingController(for url: URL,
+                            excluding excluded: ViewerWindowController? = nil) -> ViewerWindowController? {
+        let target = canonicalPath(url.resolvingSymlinksInPath())
+        return controllers.first { controller in
+            controller !== excluded && controller.fileURL.map { canonicalPath($0) == target } == true
+        }
     }
 
     func openFile(_ url: URL, noteAsRecent: Bool = true) {

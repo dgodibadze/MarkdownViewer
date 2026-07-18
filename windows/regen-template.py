@@ -17,7 +17,12 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "Resources" / "template.html"
 DST = ROOT / "windows" / "Resources" / "template.html"
 
-src = SRC.read_text()
+src = SRC.read_text(encoding="utf-8")
+
+# WebView2 serves the same narrowly scoped directories through virtual HTTPS
+# hosts instead of WKWebView's custom URL schemes.
+src = src.replace("mdv-resource:", "https://appassets.local")
+src = src.replace("mdv-document:", "https://document.local")
 
 
 def sub(old, new):
@@ -120,5 +125,5 @@ sub("""    function close() { bar.hidden = true; backdrop.innerHTML = ''; editor
     // the page, so the native side calls this hook to close the find bar.
     window.__escape = function () { if (!bar.hidden) close(); };""")
 
-DST.write_text(src)
+DST.write_text(src, encoding="utf-8")
 print(f"regenerated {DST} ({len(src)} bytes)")
