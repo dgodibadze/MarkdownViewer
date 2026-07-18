@@ -80,16 +80,30 @@ file per platform driving a system web view, ~1,000 lines each.
 curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.sh | bash
 ```
 
+**macOS dev build** — test `dev` before merging:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/dev/install.sh | bash -s -- --branch dev
+```
+
 **Windows** — paste in PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.ps1 | iex
 ```
 
-The installers verify release checksums, need no admin rights, and ask a running
-copy to quit normally before files are replaced. The macOS installer preserves
-Gatekeeper quarantine so macOS can perform its normal first-launch checks. Both
-installers validate a staged replacement before swapping out the working copy:
+**Windows dev build** — test `dev` before merging:
+
+```powershell
+$env:MARKDOWNVIEWER_REF='dev'; irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/dev/install.ps1 | iex
+```
+
+The default installers verify release checksums, need no admin rights, and ask a
+running copy to quit normally before files are replaced. The dev commands skip
+published releases and build the requested branch from source. The macOS
+installer preserves Gatekeeper quarantine so macOS can perform its normal
+first-launch checks. Both installers validate a staged replacement before
+swapping out the working copy:
 
 - **macOS** installs to **`/Applications/MarkdownViewer.app`** (latest DMG from
   [Releases](../../releases), or built from source if none is published).

@@ -27,6 +27,10 @@ Versions bump by 0.1 per release batch.
 
 ### Fixed
 
+- Installers can now test a branch before it is merged. Passing
+  `--branch dev` to the macOS installer, or setting `MARKDOWNVIEWER_REF=dev`
+  for Windows, skips published releases and builds that ref from source instead
+  of silently installing the latest stable release/default branch.
 - Saves fingerprint the on-disk file and warn before overwriting an external
   edit or recreating a deleted file, including changes made before the 1-second
   live-reload poll runs.
