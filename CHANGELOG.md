@@ -31,6 +31,9 @@ Versions bump by 0.1 per release batch.
   `--branch dev` to the macOS installer, or setting `MARKDOWNVIEWER_REF=dev`
   for Windows, skips published releases and builds that ref from source instead
   of silently installing the latest stable release/default branch.
+- The macOS installer now also supports `--branch dev --dmg`, which builds a
+  branch-specific DMG and checksum in the current folder without replacing the
+  installed app in `/Applications`.
 - Saves fingerprint the on-disk file and warn before overwriting an external
   edit or recreating a deleted file, including changes made before the 1-second
   live-reload poll runs.

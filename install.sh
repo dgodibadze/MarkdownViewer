@@ -2,12 +2,15 @@
 # MarkdownViewer one-line installer.
 #   macOS:            curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.sh | bash
 #   macOS dev build:  curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/dev/install.sh | bash -s -- --branch dev
+#   macOS dev DMG:    curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/dev/install.sh | bash -s -- --branch dev --dmg
 #   Windows Git Bash: same command (delegates to install.ps1)
 #   Windows PowerShell: irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.ps1 | iex
 set -e
 REPO="dgodibadze/MarkdownViewer"
 INSTALL_REF="${MARKDOWNVIEWER_REF:-${MARKDOWNVIEWER_BRANCH:-}}"
 INSTALL_FROM_SOURCE=0
+PACKAGE_DMG=0
+OUTPUT_DIR=$(pwd -P)
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -26,16 +29,23 @@ while [ $# -gt 0 ]; do
       INSTALL_FROM_SOURCE=1
       shift
       ;;
+    --dmg|--package-dmg)
+      PACKAGE_DMG=1
+      INSTALL_FROM_SOURCE=1
+      shift
+      ;;
     --release)
       INSTALL_FROM_SOURCE=0
       INSTALL_REF=""
+      PACKAGE_DMG=0
       shift
       ;;
     -h|--help)
-      echo "Usage: install.sh [--branch REF|--source|--release]"
+      echo "Usage: install.sh [--branch REF|--source|--dmg|--release]"
       echo "  default       Install the latest verified GitHub release."
       echo "  --branch dev  Build and install that branch/ref from source."
       echo "  --source      Build and install the default branch from source."
+      echo "  --dmg         Build a DMG in the current directory; do not install."
       exit 0
       ;;
     *)
@@ -72,7 +82,13 @@ case "$(uname -s)" in
     ;;
 esac
 
-if [ "$INSTALL_FROM_SOURCE" -eq 1 ]; then
+if [ "$PACKAGE_DMG" -eq 1 ]; then
+  if [ -n "$INSTALL_REF" ]; then
+    echo "Building MarkdownViewer DMG for macOS from source ref '$INSTALL_REF'…"
+  else
+    echo "Building MarkdownViewer DMG for macOS from source…"
+  fi
+elif [ "$INSTALL_FROM_SOURCE" -eq 1 ]; then
   if [ -n "$INSTALL_REF" ]; then
     echo "Installing MarkdownViewer for macOS from source ref '$INSTALL_REF'…"
   else
@@ -99,7 +115,9 @@ ensure_app_stopped() {
   fi
 }
 
-ensure_app_stopped
+if [ "$PACKAGE_DMG" -eq 0 ]; then
+  ensure_app_stopped
+fi
 
 TMP=$(mktemp -d)
 TARGET_APP="/Applications/MarkdownViewer.app"
@@ -190,6 +208,20 @@ else
     git clone --depth 1 "https://github.com/$REPO.git" "$TMP/src"
   fi
   (cd "$TMP/src" && ./build.sh)
+  if [ "$PACKAGE_DMG" -eq 1 ]; then
+    (cd "$TMP/src" && ./make-dmg.sh MarkdownViewer.app)
+    if [ -n "$INSTALL_REF" ]; then
+      OUTPUT_REF=$(printf '%s' "$INSTALL_REF" | tr '/' '-')
+      OUTPUT_DMG="MarkdownViewer-$OUTPUT_REF.dmg"
+    else
+      OUTPUT_DMG="MarkdownViewer-source.dmg"
+    fi
+    cp "$TMP/src/MarkdownViewer.dmg" "$OUTPUT_DIR/$OUTPUT_DMG"
+    shasum -a 256 "$OUTPUT_DIR/$OUTPUT_DMG" > "$OUTPUT_DIR/$OUTPUT_DMG.sha256"
+    echo "✓ Built $OUTPUT_DIR/$OUTPUT_DMG"
+    echo "  Checksum: $OUTPUT_DIR/$OUTPUT_DMG.sha256"
+    exit 0
+  fi
   install_app "$TMP/src/MarkdownViewer.app"
 fi
 

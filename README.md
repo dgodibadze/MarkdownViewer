@@ -86,6 +86,12 @@ curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/inst
 curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/dev/install.sh | bash -s -- --branch dev
 ```
 
+**macOS dev DMG** — build a disk image in the current folder without installing:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/dev/install.sh | bash -s -- --branch dev --dmg
+```
+
 **Windows** — paste in PowerShell:
 
 ```powershell
@@ -99,11 +105,14 @@ $env:MARKDOWNVIEWER_REF='dev'; irm https://raw.githubusercontent.com/dgodibadze/
 ```
 
 The default installers verify release checksums, need no admin rights, and ask a
-running copy to quit normally before files are replaced. The dev commands skip
-published releases and build the requested branch from source. The macOS
-installer preserves Gatekeeper quarantine so macOS can perform its normal
-first-launch checks. Both installers validate a staged replacement before
-swapping out the working copy:
+running copy to quit normally before files are replaced. The dev install
+commands skip published releases and build the requested branch from source. The
+macOS dev DMG command creates `MarkdownViewer-dev.dmg` and
+`MarkdownViewer-dev.dmg.sha256` in the folder where you run it, without
+installing or replacing `/Applications/MarkdownViewer.app`. The macOS installer
+preserves Gatekeeper quarantine so macOS can perform its normal first-launch
+checks. Both installers validate a staged replacement before swapping out the
+working copy:
 
 - **macOS** installs to **`/Applications/MarkdownViewer.app`** (latest DMG from
   [Releases](../../releases), or built from source if none is published).
