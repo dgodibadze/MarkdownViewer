@@ -9,7 +9,7 @@
     <RootNamespace>MarkdownViewer</RootNamespace>
     <AssemblyName>MarkdownViewer</AssemblyName>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>1.9.0</Version>
+    <Version>2.0.0</Version>
     <Company>David Godibadze</Company>
     <Product>MarkdownViewer</Product>
     <Copyright>© David Godibadze — GPLv3</Copyright>

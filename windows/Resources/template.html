@@ -768,6 +768,45 @@ const MD = __MARKDOWN__;
     if (prevFocus && prevFocus !== editor && prevFocus.focus) prevFocus.focus();
   }
 
+  // Edit-menu commands. macOS gets these free from the AppKit responder chain
+  // (the Edit menu items target the web view directly); WinForms has no
+  // responder chain, so its Edit menu calls these instead. Clipboard payloads
+  // are carried by the native side — Chromium blocks execCommand('cut'/'copy'/
+  // 'paste') without a user gesture, and an ExecuteScriptAsync call isn't one.
+  // Text changes go through spliceEditor() so undo survives (trap #7).
+  // Preview mode has no editable target, so mutating commands no-op there and
+  // Copy/Select All act on the rendered text instead — which is what the
+  // AppKit responder chain does on macOS when the textarea isn't first responder.
+  function editable() { return body.getAttribute('data-mode') !== 'preview'; }
+
+  window.__editSelection = function () {
+    if (!editable()) {
+      try { return String(window.getSelection() || ''); } catch (e) { return ''; }
+    }
+    return editor.value.slice(editor.selectionStart, editor.selectionEnd);
+  };
+  window.__editInsert = function (text) {
+    if (!editable()) return;
+    spliceEditor(editor.selectionStart, editor.selectionEnd, text || '');
+  };
+  window.__editCmd = function (name) {
+    if (name === 'selectAll') {
+      if (!editable()) {
+        try {
+          var sel = window.getSelection(), r = document.createRange();
+          r.selectNodeContents(preview); sel.removeAllRanges(); sel.addRange(r);
+        } catch (e) {}
+        return;
+      }
+      editor.focus(); editor.select(); return;
+    }
+    if (!editable()) return;
+    if (name === 'delete') { window.__editInsert(''); return; }
+    // undo/redo need no gesture and must use the native stack, not spliceEditor.
+    if (document.activeElement !== editor) editor.focus();
+    try { document.execCommand(name, false, null); } catch (e) {}
+  };
+
   // ---- Editing ----
   var renderTimer = null, changeTimer = null;
   editor.addEventListener('input', function () {

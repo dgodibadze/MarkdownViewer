@@ -5,6 +5,48 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [2.0] — 2026-07-20
+
+### Windows parity
+
+Closes the capability gaps found in a full Mac-vs-Windows audit. The shared
+render template was already provably identical across platforms; these are the
+native-shell differences.
+
+- **Drag & drop is now extension-filtered on Windows**, matching the Mac
+  `DropWebView`. Previously *any* dropped file — an image, a `.exe` — opened as
+  a tab and was rendered as if it were markdown text.
+- **The Windows Edit menu gained Undo, Redo, Cut, Copy, Paste, Delete and
+  Select All**, which previously existed only on macOS (where AppKit's responder
+  chain supplies them). Their shortcuts are shown but deliberately *not*
+  registered as WinForms accelerators — WebView2's browser accelerators already
+  handle those keys inside the editor, and a registered accelerator would
+  intercept the key before the page saw it. Clipboard payloads move through the
+  native side because Chromium refuses `execCommand('cut'/'copy'/'paste')`
+  without a user gesture. Text changes go through the undo-safe splice path.
+  In Preview mode, Copy and Select All act on the rendered text and mutating
+  commands no-op, mirroring the responder-chain behavior on macOS.
+- **The Windows Open dialog now lists `.txt`**, which the Mac open panel already
+  matched via plain-text UTType conformance.
+- **The Windows About window is non-modal**, like the Mac one — you can keep
+  reading a document while the bundled docs are open.
+- **Windows recent-files dedupe is now canonical** (resolves junctions/symlinks
+  and case), matching the Mac `canonicalPath` dedupe; one file reached by two
+  path spellings no longer produces two entries.
+
+### Added
+
+- `REFERENCE.md` — exhaustive feature, shortcut and behavior reference for both
+  platforms, including every known macOS/Windows difference.
+- `FEATURES.md` — tech-agnostic functionality spec for rebuilding the app on a
+  different stack.
+
+### Known remaining platform difference
+
+- macOS supports multiple independent windows (each optionally tabbed); Windows
+  remains one window with tabs. This is an architectural design choice, not an
+  oversight — see `REFERENCE.md` §8.
+
 ## [1.9] — 2026-07-17
 
 ### Security

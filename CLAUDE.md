@@ -195,7 +195,18 @@ Both have caught real errors. They do not replace an actual build.
 
 ## State as of this handoff
 
-App is at **v1.9** (2026-07-17) — see `CHANGELOG.md` for release notes. v1.9
+App is at **v2.0** (2026-07-20) — see `CHANGELOG.md` for release notes. v2.0
+closed the Windows-vs-Mac capability gaps found in a full audit: Windows
+drag-drop is now extension-filtered, the Windows Edit menu gained
+Undo/Redo/Cut/Copy/Paste/Delete/Select All (routed through new
+`window.__editCmd`/`__editSelection`/`__editInsert` hooks in the shared
+template — display-only shortcut labels, because WebView2 already handles
+those keys natively and a WinForms accelerator would steal them), the Windows
+Open dialog lists `.txt`, its About window is non-modal, and its recent-files
+dedupe is canonical. **The only remaining intentional platform difference is
+multi-window (Mac) vs. one-window-with-tabs (Windows).** Also added
+`REFERENCE.md` (exhaustive feature/shortcut/behavior reference) and
+`FEATURES.md` (tech-agnostic rebuild spec). v1.9
 hardens local-resource isolation, HTML sanitization, bridge trust, navigation,
 asset/install verification, external-change saves, format preservation, and
 transactional Save As behavior on both platforms. v1.8

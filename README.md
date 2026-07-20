@@ -8,7 +8,7 @@
 Preview, Edit, and Split with live rendering, synced scrolling, and
 find & replace — 100% offline.
 
-![version](https://img.shields.io/badge/version-1.9-blueviolet)
+![version](https://img.shields.io/badge/version-2.0-blueviolet)
 ![platform](https://img.shields.io/badge/platform-macOS%2011%2B%20%7C%20Windows%2010%2B-blue)
 ![license](https://img.shields.io/badge/license-GPLv3-green)
 ![built with](https://img.shields.io/badge/built%20with-Swift%20%2B%20WebKit%20%C2%B7%20C%23%20%2B%20WebView2-orange)

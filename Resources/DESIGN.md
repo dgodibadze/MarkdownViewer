@@ -160,6 +160,19 @@ triggers the same re-render manually, confirming first if edits would be lost.
   toggle in the bar expands the Replace controls (also via ⌥⌘F / Ctrl+H).
   Escape closes the bar from anywhere in the page, not just the find fields.
   Opening Find from Preview mode switches to Edit without persisting the mode.
+- **Edit-menu commands** (Undo/Redo/Cut/Copy/Paste/Delete/Select All): macOS
+  gets these from the AppKit responder chain, so its menu items target the web
+  view directly. WinForms has no responder chain, so the Windows Edit menu
+  calls `window.__editCmd` / `__editSelection` / `__editInsert` instead. Those
+  items show shortcut *labels* but deliberately register **no** WinForms
+  accelerator — WebView2's browser accelerators already handle Ctrl+Z/X/C/V/A
+  inside the textarea, and a registered accelerator would intercept the key
+  before the page saw it. Clipboard payloads travel through the native side
+  because Chromium refuses `execCommand('cut'/'copy'/'paste')` without a user
+  gesture and an injected script isn't one; text changes go through
+  `spliceEditor()` so undo survives. In Preview mode the mutating commands
+  no-op and Copy/Select All act on the rendered text, matching what the
+  responder chain does on macOS when the textarea isn't first responder.
 - **Scroll sync (Split mode)** uses a driver-pane model: only the pane claimed
   by real input (`wheel`/`mousedown`/`touchstart`/`keydown`/`focusin`)
   propagates its scroll, plus a 1px write threshold. Timer/flag guards are
@@ -239,6 +252,10 @@ git history before the v1.2 commit.
   It shares the rendering assets and implements the same design described in
   this document (same bridge actions, same save/dirty invariants, same
   security model).
+- **Known intentional difference**: macOS supports multiple independent
+  windows (each optionally tabbed); Windows is one window with tabs. Every
+  other capability gap found in the v2.0 audit was closed — see
+  `REFERENCE.md` §11 for the exhaustive difference list.
 - **Keeping the two in sync**: `windows/Resources/template.html` is
   *regenerated* from the Mac `Resources/template.html` by
   **`windows/regen-template.py`** (delta: message bridge chrome.webview-first,

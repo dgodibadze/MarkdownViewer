@@ -276,7 +276,7 @@ sealed class ViewerTab : TabPage
         catch { return false; }
     }
 
-    static bool IsMarkdownPath(string path)
+    internal static bool IsMarkdownPath(string path)
     {
         var ext = Path.GetExtension(path).TrimStart('.');
         return new[] { "md", "markdown", "mdown", "mkd", "mkdn", "mdwn", "markdn",
@@ -588,6 +588,62 @@ sealed class ViewerTab : TabPage
         try { web.Focus(); } catch { }
     }
 
+    // MARK: Edit menu commands
+    //
+    // macOS gets Undo/Cut/Copy/… free from the AppKit responder chain; WinForms
+    // has none, so the Edit menu routes here. Ctrl+Z/X/C/V/A themselves are NOT
+    // registered as menu accelerators — WebView2's own browser accelerators
+    // already handle them inside the textarea, and a WinForms accelerator would
+    // intercept the key before the page ever saw it. These exist for the menu
+    // (discoverability + mouse access); the keyboard path stays native.
+    //
+    // Clipboard payloads move through the native side because Chromium refuses
+    // execCommand('cut'/'copy'/'paste') without a user gesture, and a script
+    // injected via ExecuteScriptAsync does not count as one.
+
+    public void EditUndo() => RunJS("window.__editCmd && window.__editCmd('undo')");
+    public void EditRedo() => RunJS("window.__editCmd && window.__editCmd('redo')");
+    public void EditSelectAll() => RunJS("window.__editCmd && window.__editCmd('selectAll')");
+    public void EditDelete() => RunJS("window.__editCmd && window.__editCmd('delete')");
+
+    /// The editor's current selection, or "" when the page can't answer.
+    async Task<string> SelectionAsync()
+    {
+        try
+        {
+            var r = await web.CoreWebView2.ExecuteScriptAsync(
+                "window.__editSelection ? window.__editSelection() : null");
+            if (string.IsNullOrEmpty(r) || r == "null") return "";
+            return JsonSerializer.Deserialize<string>(r) ?? "";
+        }
+        catch { return ""; }
+    }
+
+    /// Copies the selection to the clipboard. Returns false if there was none
+    /// (so Cut knows not to delete anything).
+    async Task<bool> CopySelectionAsync()
+    {
+        var sel = await SelectionAsync();
+        if (sel.Length == 0) return false;
+        try { Clipboard.SetText(sel); } catch { return false; }
+        return true;
+    }
+
+    public async void EditCopy() => await CopySelectionAsync();
+
+    public async void EditCut()
+    {
+        if (await CopySelectionAsync()) EditDelete();
+    }
+
+    public void EditPaste()
+    {
+        string text;
+        try { text = Clipboard.GetText() ?? ""; } catch { return; }
+        if (text.Length == 0) return;
+        RunJS("window.__editInsert && window.__editInsert(" + Renderer.JsString(text) + ")");
+    }
+
     /// Saves the document: pulls the live editor text from the page, then writes
     /// it. Falls back to the cached `lastText` when the page can't answer (e.g.
     /// the error page is showing). Untitled documents run a save dialog first
@@ -881,14 +937,22 @@ sealed class MainForm : Form
                 if (tabs.GetTabRect(i).Contains(e.Location)) { CloseTab((ViewerTab)tabs.TabPages[i]); break; }
         };
 
+        // Only markdown-ish files open as documents (mirrors the Mac
+        // DropWebView filter). Without this any dropped file — an image, an
+        // .exe — would open as a tab and be rendered as if it were text.
         DragEnter += (_, e) =>
         {
-            if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy;
+            e.Effect = DroppedMarkdownFiles(e.Data).Count > 0
+                ? DragDropEffects.Copy : DragDropEffects.None;
+        };
+        DragOver += (_, e) =>
+        {
+            e.Effect = DroppedMarkdownFiles(e.Data).Count > 0
+                ? DragDropEffects.Copy : DragDropEffects.None;
         };
         DragDrop += (_, e) =>
         {
-            foreach (var f in (string[])e.Data.GetData(DataFormats.FileDrop))
-                if (File.Exists(f)) OpenFile(f);
+            foreach (var f in DroppedMarkdownFiles(e.Data)) OpenFile(f);
         };
 
         Shown += async (_, __) =>
@@ -911,6 +975,23 @@ sealed class MainForm : Form
         FormClosing += OnFormClosing;
         UpdateEmptyState();
         StartPipeServer();
+    }
+
+    /// The markdown files in a drag payload, in drop order. Empty when the
+    /// drag carries no files or nothing with a markdown-ish extension.
+    static List<string> DroppedMarkdownFiles(IDataObject data)
+    {
+        var hits = new List<string>();
+        try
+        {
+            if (data == null || !data.GetDataPresent(DataFormats.FileDrop)) return hits;
+            var paths = data.GetData(DataFormats.FileDrop) as string[];
+            if (paths == null) return hits;
+            foreach (var p in paths)
+                if (File.Exists(p) && ViewerTab.IsMarkdownPath(p)) hits.Add(p);
+        }
+        catch { /* a malformed drag payload just means "nothing to open" */ }
+        return hits;
     }
 
     /// Listens for file paths sent by later app instances (see App.Main) so
@@ -1041,7 +1122,17 @@ sealed class MainForm : Form
     public void NoteRecent(string path)
     {
         var list = RecentPaths();
-        list.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+        // Compare canonically (resolves junctions/symlinks and fixes case) so
+        // one file reached by two path spellings doesn't get two entries —
+        // matches the Mac canonicalPath dedupe.
+        string key;
+        try { key = ViewerTab.CanonicalLocalPath(path); } catch { key = path; }
+        list.RemoveAll(p =>
+        {
+            string other;
+            try { other = ViewerTab.CanonicalLocalPath(p); } catch { other = p; }
+            return string.Equals(other, key, StringComparison.OrdinalIgnoreCase);
+        });
         list.Insert(0, path);
         if (list.Count > RecentsMax) list = list.Take(RecentsMax).ToList();
         Settings.Set(RecentsKey, JsonSerializer.Serialize(list));
@@ -1139,7 +1230,9 @@ sealed class MainForm : Form
         using var dlg = new OpenFileDialog
         {
             Multiselect = true,
-            Filter = "Markdown files|*.md;*.markdown;*.mdown;*.mkd;*.mkdn;*.mdwn;*.markdn;*.mdtxt;*.text;*.rmd;*.qmd;*.mdx;*.mdc|All files|*.*",
+            // Mirrors the Mac open panel, whose plain-text UTType conformance
+            // pulls in *.txt — spell it out here, Windows filters are literal.
+            Filter = "Markdown files|*.md;*.markdown;*.mdown;*.mkd;*.mkdn;*.mdwn;*.markdn;*.mdtxt;*.text;*.txt;*.rmd;*.qmd;*.mdx;*.mdc|All files|*.*",
             Title = "Open Markdown File",
         };
         if (dlg.ShowDialog(this) == DialogResult.OK)
@@ -1196,8 +1289,11 @@ sealed class MainForm : Form
 
     void ShowAbout()
     {
-        using var about = new AboutForm(this);
-        about.ShowDialog(this);
+        // Non-modal, like the Mac About window: you can keep reading a document
+        // while the bundled docs are open. Disposes itself on close.
+        var about = new AboutForm(this);
+        about.FormClosed += (_, __) => about.Dispose();
+        about.Show(this);
     }
 
     /// Opens a bundled markdown doc by copying it to a throwaway temp file and viewing that
@@ -1253,7 +1349,20 @@ sealed class MainForm : Form
         file.DropDownItems.Add(Item("Exit", Keys.Alt | Keys.F4, (_, __) => Close()));
 
         // Edit
+        // Undo/Redo/Cut/Copy/Paste/Delete/Select All carry *display-only*
+        // shortcut labels: WebView2's browser accelerators already handle those
+        // keys inside the textarea, and registering them here would intercept
+        // the key before the page saw it. See ViewerTab's edit-command block.
         var edit = new ToolStripMenuItem("&Edit");
+        edit.DropDownItems.Add(DisplayItem("Undo", "Ctrl+Z", (_, __) => Current?.EditUndo()));
+        edit.DropDownItems.Add(DisplayItem("Redo", "Ctrl+Y", (_, __) => Current?.EditRedo()));
+        edit.DropDownItems.Add(new ToolStripSeparator());
+        edit.DropDownItems.Add(DisplayItem("Cut", "Ctrl+X", (_, __) => Current?.EditCut()));
+        edit.DropDownItems.Add(DisplayItem("Copy", "Ctrl+C", (_, __) => Current?.EditCopy()));
+        edit.DropDownItems.Add(DisplayItem("Paste", "Ctrl+V", (_, __) => Current?.EditPaste()));
+        edit.DropDownItems.Add(DisplayItem("Delete", "", (_, __) => Current?.EditDelete()));
+        edit.DropDownItems.Add(DisplayItem("Select All", "Ctrl+A", (_, __) => Current?.EditSelectAll()));
+        edit.DropDownItems.Add(new ToolStripSeparator());
         edit.DropDownItems.Add(Item("Find…", Keys.Control | Keys.F, (_, __) => Current?.FindInPage()));
         edit.DropDownItems.Add(Item("Find and Replace…", Keys.Control | Keys.H, (_, __) => Current?.FindReplaceInPage()));
 
@@ -1287,6 +1396,19 @@ sealed class MainForm : Form
     {
         var item = new ToolStripMenuItem(text, null, onClick);
         if (keys != Keys.None) item.ShortcutKeys = keys;
+        return item;
+    }
+
+    /// A menu item that *shows* a shortcut without registering it, for keys the
+    /// WebView already handles natively (see the Edit menu).
+    static ToolStripMenuItem DisplayItem(string text, string shortcut, EventHandler onClick)
+    {
+        var item = new ToolStripMenuItem(text, null, onClick);
+        if (shortcut.Length > 0)
+        {
+            item.ShortcutKeyDisplayString = shortcut;
+            item.ShowShortcutKeys = true;
+        }
         return item;
     }
 }
