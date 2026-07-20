@@ -5,6 +5,78 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [2.1] — 2026-07-20
+
+Full-codebase bug-hunt release: three independent review passes (Swift shell,
+shared template, Windows shell + parity audit), every finding adversarially
+verified before fixing.
+
+### Fixed — shared template (both platforms)
+
+- **Replace could loop on its own replacement.** When the replacement text
+  contained the search term (find `foo`, replace `foobar`), Replace re-selected
+  the text it had just inserted instead of advancing — repeated clicks grew
+  `foobarbarbar…` and never reached the next real match. The cursor now moves
+  past the end of the inserted replacement.
+- **Ticking a task checkbox in Preview mode silently wiped the editor's undo
+  stack.** The hidden (display:none) editor can't take focus, so the
+  undo-preserving `execCommand` edit failed and the code fell back to the
+  undo-destroying direct assignment. The editor is now revealed off-screen for
+  the duration of such an edit, keeping every checkbox toggle undoable.
+- **Scrolling in Edit mode clobbered the saved preview scroll position** (the
+  hidden preview's scrollTop reads 0), so a live reload lost your place.
+- **The copy button on a raw-HTML `<pre>` block** (no inner `<code>`) included
+  its own "Copy" label in the copied text; it also reported "Copied" even when
+  both clipboard paths had failed.
+
+### Fixed — macOS
+
+- **Open Recent dedupes canonically** (case, symlinks) like the window dedupe —
+  one file opened via two path spellings no longer produces two entries.
+- **A UTF-16LE file whose first character is U+0000** was misdetected as
+  UTF-32LE (`FF FE 00 00` is a valid prefix of both) and could be rewritten as
+  garbled UTF-8 on save; the decoder now falls back to UTF-16LE before
+  declaring the file undecodable.
+- **Quitting while a save panel was already open could hang the app** in
+  `.terminateLater` forever: the quit's second save request stacked a second
+  sheet on the same window and its completion could never fire. Later save
+  requests now chain onto the in-flight panel's outcome.
+
+### Fixed — Windows
+
+- **v2.0's `Program.cs` did not compile** (missing `;` after the `MimeType`
+  switch expression) — the v2.0 Windows changes had been statically reviewed
+  but never built. Fixed; a real `dotnet build` on Windows is still required
+  before release.
+- **Ctrl+W on a clean tab disposed the WebView2 inside its own
+  `WebMessageReceived` handler** — a documented reentrancy hazard (possible
+  crash/hang). Tab close from the bridge is now deferred via `BeginInvoke`.
+- **A missing WebView2 Runtime crashed the app with no explanation**, and the
+  failed environment task was cached so even a transient failure poisoned every
+  later tab. Failures now show install guidance and are retried.
+- **The tab header kept the old filename after Save As** / first save of an
+  Untitled document.
+- **The live-reload timer kept ticking inside modal dialogs** (WinForms timers
+  run in dialog message loops, unlike NSTimer during `runModal`), so an
+  external change could reload the document *under* the save-conflict prompt
+  and change what "Save Anyway" wrote. The watcher is suspended for the
+  duration of a save.
+- **A second app instance that couldn't reach the first one's pipe** spun a
+  tight exception loop burning a full CPU core; only the mutex-owning instance
+  now runs the pipe server, with a retry backoff.
+
+### Windows parity
+
+- **Window frame is persisted and restored** across launches (validated
+  against the current monitors), matching the Mac frame autosave.
+- **Recents are mirrored to the Windows shell** (`SHAddToRecentDocs` →
+  Explorer Quick Access / Jump List), matching the Mac Dock-menu integration
+  via `NSDocumentController`; Clear Menu clears the shell entries too.
+- **The About window stays open** after opening a bundled doc, like on macOS.
+- **Exit now collects all Save / Don't Save / Cancel answers first, then
+  saves** — a Cancel on any document aborts the exit before a single write
+  happens, matching the Mac quit flow exactly.
+
 ## [2.0] — 2026-07-20
 
 ### Windows parity

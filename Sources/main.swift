@@ -426,6 +426,13 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
                let decoded = String(data: data.dropFirst(4), encoding: .utf32LittleEndian) {
                 textEncoding = .utf32LE
                 lastText = decoded
+            } else if (data.count - 2).isMultiple(of: 2),
+                      let decoded = String(data: data.dropFirst(2), encoding: .utf16LittleEndian) {
+                // FF FE 00 00 is also a valid UTF-16LE BOM followed by U+0000 —
+                // try that before declaring the file undecodable, otherwise a
+                // save would rewrite it as garbled UTF-8.
+                textEncoding = .utf16LE
+                lastText = decoded
             } else {
                 textEncoding = .lossy
                 lastText = String(decoding: data.dropFirst(4), as: UTF8.self)
@@ -565,8 +572,26 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
     /// The save panel: first save of an Untitled document, or Save As… for a
     /// file-backed one (pre-filled with the current name/folder). Defaults to
     /// .md but `allowsOtherFileTypes` lets the user type any extension.
+    /// Completions queued while the save panel is already up — e.g. quit asks
+    /// to save a document whose close-triggered save panel is still open.
+    /// Stacking a second sheet on the same window could leave the quit's
+    /// completion unresolved forever (`.terminateLater` hang), so later save
+    /// requests chain onto the in-flight panel's outcome instead.
+    private var savePanelWaiters: [(Bool) -> Void]?
+
     private func saveAs(completion: ((Bool) -> Void)?) {
+        if savePanelWaiters != nil {
+            if let completion = completion { savePanelWaiters?.append(completion) }
+            return
+        }
         guard let window = window else { completion?(false); return }
+        savePanelWaiters = []
+        func finish(_ ok: Bool) {
+            let waiters = savePanelWaiters ?? []
+            savePanelWaiters = nil
+            completion?(ok)
+            for waiter in waiters { waiter(ok) }
+        }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = fileURL?.lastPathComponent ?? "Untitled.md"
         if let dir = fileURL?.deletingLastPathComponent() { panel.directoryURL = dir }
@@ -574,7 +599,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
         panel.allowsOtherFileTypes = true
         panel.canCreateDirectories = true
         panel.beginSheetModal(for: window) { resp in
-            guard resp == .OK, let url = panel.url else { completion?(false); return }
+            guard resp == .OK, let url = panel.url else { finish(false); return }
             let target = url.resolvingSymlinksInPath()
             if let delegate = NSApp.delegate as? AppDelegate,
                let existing = delegate.existingController(for: target, excluding: self) {
@@ -583,7 +608,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
                 alert.messageText = "That file is already open."
                 alert.informativeText = "Close the other window before saving to the same path."
                 alert.runModal()
-                completion?(false)
+                finish(false)
                 return
             }
             let sameAsCurrent = self.fileURL.map {
@@ -601,7 +626,7 @@ final class ViewerWindowController: NSWindowController, WKNavigationDelegate, WK
                 self.renderAndLoad()
                 (NSApp.delegate as? AppDelegate)?.documentDidGetFile(self)
             }
-            completion?(ok)
+            finish(ok)
         }
     }
 
@@ -978,7 +1003,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func noteRecent(_ url: URL) {
-        var paths = recentPaths().filter { $0 != url.path }
+        // Dedupe canonically (case, symlinks) like the window dedupe — an exact
+        // string compare gave one file two entries when opened via two spellings.
+        let key = canonicalPath(url)
+        var paths = recentPaths().filter { canonicalPath(URL(fileURLWithPath: $0)) != key }
         paths.insert(url.path, at: 0)
         if paths.count > recentsMax { paths = Array(paths.prefix(recentsMax)) }
         UserDefaults.standard.set(paths, forKey: recentsKey)

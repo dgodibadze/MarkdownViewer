@@ -6,6 +6,7 @@
 
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Security.Cryptography;
@@ -186,8 +187,23 @@ sealed class ViewerTab : TabPage
 
     public async Task Init()
     {
-        var env = await App.GetWebViewEnvironment();
-        await web.EnsureCoreWebView2Async(env);
+        try
+        {
+            var env = await App.GetWebViewEnvironment();
+            await web.EnsureCoreWebView2Async(env);
+        }
+        catch (Exception ex)
+        {
+            // Without this, a missing WebView2 runtime throws inside an
+            // `async void` caller and terminates the whole process with no
+            // explanation. Show guidance and leave the tab blank instead.
+            MessageBox.Show(
+                "MarkdownViewer could not start its embedded browser (Microsoft Edge WebView2 Runtime)."
+                + "\n\nInstall the WebView2 Runtime from Microsoft and reopen the file."
+                + "\n\n" + ex.Message,
+                "WebView2 unavailable", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
 
         var s = web.CoreWebView2.Settings;
         // Browser accelerator keys stay enabled: disabling them also stops keys
@@ -404,7 +420,7 @@ sealed class ViewerTab : TabPage
         ".m4a" => "audio/mp4", ".mp3" => "audio/mpeg", ".wav" => "audio/wav",
         ".mov" => "video/quicktime", ".mp4" => "video/mp4", ".webm" => "video/webm",
         ".txt" => "text/plain; charset=utf-8", _ => "application/octet-stream"
-    }
+    };
 
     public void RenderAndLoad()
     {
@@ -449,7 +465,14 @@ sealed class ViewerTab : TabPage
             else if (data.AsSpan().StartsWith(new byte[] { 0xFF, 0xFE, 0x00, 0x00 }))
             {
                 try { lastText = new UTF32Encoding(false, false, true).GetString(data, 4, data.Length - 4); textEncoding = TextEncodingKind.Utf32LE; }
-                catch { lastText = new UTF32Encoding(false, false, false).GetString(data, 4, data.Length - 4); textEncoding = TextEncodingKind.Lossy; }
+                catch
+                {
+                    // FF FE 00 00 is also a valid UTF-16LE BOM followed by
+                    // U+0000 — try that before declaring the file undecodable,
+                    // otherwise a save would rewrite it as garbled UTF-8.
+                    try { lastText = new UnicodeEncoding(false, false, true).GetString(data, 2, data.Length - 2); textEncoding = TextEncodingKind.Utf16LE; }
+                    catch { lastText = new UTF32Encoding(false, false, false).GetString(data, 4, data.Length - 4); textEncoding = TextEncodingKind.Lossy; }
+                }
             }
             else if (data.AsSpan().StartsWith(new byte[] { 0x00, 0x00, 0xFE, 0xFF }))
             {
@@ -558,7 +581,11 @@ sealed class ViewerTab : TabPage
                     host.ShowOpenPathDialog();
                     break;
                 case "closeTab":
-                    host.CloseTab(this);
+                    // Deferred: closing a clean tab synchronously would Dispose
+                    // this WebView2 inside its own WebMessageReceived handler —
+                    // a documented WebView2 reentrancy hazard (dirty tabs were
+                    // safe only because the save `await` broke the call stack).
+                    host.BeginInvoke(() => host.CloseTab(this));
                     break;
                 case "reload":
                     ReloadFromDisk();
@@ -708,6 +735,7 @@ sealed class ViewerTab : TabPage
             StringComparison.OrdinalIgnoreCase);
         if (!WriteToDisk(target, checkConflict: sameAsCurrent)) return false;
         FilePath = target;
+        Text = DisplayName;   // tab header — SetDirty(false) ran with the old name
         ToolTipText = FilePath;
         host.UpdateTitle();
         StartWatching();
@@ -721,6 +749,19 @@ sealed class ViewerTab : TabPage
 
     /// Writes the latest editor text back to the markdown file on disk.
     bool WriteToDisk(string targetPath = null, bool checkConflict = true)
+    {
+        // The WinForms timer still ticks inside modal dialog message loops
+        // (unlike NSTimer during NSAlert.runModal), so a live-reload could fire
+        // under the conflict/format prompts below and swap lastText to the
+        // external content just before the user's "overwrite" answer applies.
+        // Suspend the watcher for the duration of the save.
+        var resumeWatch = watchTimer.Enabled;
+        watchTimer.Stop();
+        try { return WriteToDiskCore(targetPath, checkConflict); }
+        finally { if (resumeWatch) watchTimer.Start(); }
+    }
+
+    bool WriteToDiskCore(string targetPath, bool checkConflict)
     {
         var target = targetPath ?? FilePath;
         if (target == null) return false;
@@ -911,12 +952,13 @@ sealed class MainForm : Form
     ToolStripMenuItem wrapMenuItem;
     bool forceClose;
 
-    public MainForm(string[] args)
+    public MainForm(string[] args, bool isFirstInstance = true)
     {
         Text = "MarkdownViewer";
         MinimumSize = new Size(420, 320);
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(900, 760);
+        RestoreWindowPlacement();   // mirrors the Mac frame-autosave behavior
         AllowDrop = true;
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -974,7 +1016,46 @@ sealed class MainForm : Form
 
         FormClosing += OnFormClosing;
         UpdateEmptyState();
-        StartPipeServer();
+        // Only the instance that owns the singleton mutex may listen — a
+        // mutex-fallthrough second instance constructing the (max-1-instance)
+        // pipe would throw instantly, get swallowed, and retry in a tight loop.
+        if (isFirstInstance) StartPipeServer();
+    }
+
+    // MARK: Window frame persistence (the Mac side's setFrameAutosaveName analog)
+
+    const string WindowKey = "windowPlacement";
+
+    void RestoreWindowPlacement()
+    {
+        try
+        {
+            var raw = Settings.Get(WindowKey);
+            if (raw == null) return;
+            var p = JsonSerializer.Deserialize<int[]>(raw);
+            if (p == null || p.Length != 4 || p[2] < 420 || p[3] < 320) return;
+            var r = new Rectangle(p[0], p[1], p[2], p[3]);
+            // Only restore a frame that is still at least partly on a screen
+            // (monitors get unplugged between sessions).
+            foreach (var screen in Screen.AllScreens)
+                if (screen.WorkingArea.IntersectsWith(r))
+                {
+                    StartPosition = FormStartPosition.Manual;
+                    Bounds = r;
+                    return;
+                }
+        }
+        catch { /* a bad saved frame just means "use the default" */ }
+    }
+
+    void SaveWindowPlacement()
+    {
+        try
+        {
+            var r = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+            Settings.Set(WindowKey, JsonSerializer.Serialize(new[] { r.X, r.Y, r.Width, r.Height }));
+        }
+        catch { /* best-effort */ }
     }
 
     /// The markdown files in a drag payload, in drop order. Empty when the
@@ -1019,7 +1100,7 @@ sealed class MainForm : Form
                             if (File.Exists(p)) OpenFile(p);
                     });
                 }
-                catch { /* pipe hiccups shouldn't kill the listener */ }
+                catch { Thread.Sleep(500); /* pipe hiccups shouldn't kill the listener — or spin a core */ }
             }
         }) { IsBackground = true };
         thread.Start();
@@ -1113,6 +1194,12 @@ sealed class MainForm : Form
     const string RecentsKey = "recentFiles";
     const int RecentsMax = 10;
 
+    // Shell recents (Explorer Quick Access / taskbar Jump List) — the Windows
+    // analog of the Mac side's NSDocumentController.noteNewRecentDocumentURL.
+    const uint SHARD_PATHW = 0x3;
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern void SHAddToRecentDocs(uint uFlags, string pv);
+
     List<string> RecentPaths()
     {
         try { return JsonSerializer.Deserialize<List<string>>(Settings.Get(RecentsKey) ?? "[]") ?? new List<string>(); }
@@ -1136,6 +1223,7 @@ sealed class MainForm : Form
         list.Insert(0, path);
         if (list.Count > RecentsMax) list = list.Take(RecentsMax).ToList();
         Settings.Set(RecentsKey, JsonSerializer.Serialize(list));
+        try { SHAddToRecentDocs(SHARD_PATHW, path); } catch { /* shell recents are best-effort */ }
     }
 
     /// Rebuilds File ▸ Open Recent every time it's about to show.
@@ -1154,7 +1242,13 @@ sealed class MainForm : Form
             menu.DropDownItems.Add(new ToolStripMenuItem("No Recent Files") { Enabled = false });
         menu.DropDownItems.Add(new ToolStripSeparator());
         var clear = new ToolStripMenuItem("Clear Menu") { Enabled = existing.Count > 0 };
-        clear.Click += (_, __) => Settings.Set(RecentsKey, "[]");
+        clear.Click += (_, __) =>
+        {
+            Settings.Set(RecentsKey, "[]");
+            // null path = clear the shell's usage data too (matches the Mac
+            // side's clearRecentDocuments).
+            try { SHAddToRecentDocs(SHARD_PATHW, null); } catch { }
+        };
         menu.DropDownItems.Add(clear);
     }
 
@@ -1187,6 +1281,7 @@ sealed class MainForm : Form
     {
         // Snapshot the session before any tab teardown, then freeze it.
         SaveSession();
+        SaveWindowPlacement();
         isExiting = true;
         if (!forceClose)
         {
@@ -1205,6 +1300,10 @@ sealed class MainForm : Form
 
     async void FinishClose(ViewerTab[] dirty)
     {
+        // Collect every Save / Don't Save / Cancel answer FIRST, then perform
+        // the saves — matching the Mac quit flow, where a Cancel on any
+        // document aborts the exit before a single write has happened.
+        var toSave = new List<ViewerTab>();
         foreach (var tab in dirty)
         {
             tabs.SelectedTab = tab;
@@ -1213,7 +1312,13 @@ sealed class MainForm : Form
                 "Unsaved Changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
             // Aborting the exit un-freezes session tracking (see OnFormClosing).
             if (r == DialogResult.Cancel) { isExiting = false; return; }
-            if (r == DialogResult.Yes && !await tab.SaveAsync()) { isExiting = false; return; }
+            if (r == DialogResult.Yes) toSave.Add(tab);
+        }
+        foreach (var tab in toSave)
+        {
+            tabs.SelectedTab = tab;
+            // A cancelled save dialog (Untitled) or failed write aborts the exit.
+            if (!await tab.SaveAsync()) { isExiting = false; return; }
         }
         forceClose = true;
         Close();
@@ -1456,14 +1561,16 @@ sealed class AboutForm : Form
             Location = new Point(0, 168), Size = new Size(500, 20),
         };
 
+        // The window stays open after a doc button — matching the Mac About
+        // window, which is reused across clicks rather than closed.
         var readme = new Button { Text = "Read Me", Location = new Point(20, 216), Width = 110 };
-        readme.Click += (_, __) => { host.OpenBundledDoc("README.md"); Close(); };
+        readme.Click += (_, __) => host.OpenBundledDoc("README.md");
         var changelog = new Button { Text = "Changelog", Location = new Point(140, 216), Width = 110 };
-        changelog.Click += (_, __) => { host.OpenBundledDoc("CHANGELOG.md"); Close(); };
+        changelog.Click += (_, __) => host.OpenBundledDoc("CHANGELOG.md");
         var arch = new Button { Text = "Architecture", Location = new Point(260, 216), Width = 110 };
-        arch.Click += (_, __) => { host.OpenBundledDoc("ARCHITECTURE.md"); Close(); };
+        arch.Click += (_, __) => host.OpenBundledDoc("ARCHITECTURE.md");
         var design = new Button { Text = "Design", Location = new Point(380, 216), Width = 110 };
-        design.Click += (_, __) => { host.OpenBundledDoc("DESIGN.md"); Close(); };
+        design.Click += (_, __) => host.OpenBundledDoc("DESIGN.md");
 
         Controls.AddRange(new Control[] { icon, name, ver, author, readme, changelog, arch, design });
     }
@@ -1479,9 +1586,14 @@ static class App
     /// profile stored under %LOCALAPPDATA%\MarkdownViewer.
     public static Task<CoreWebView2Environment> GetWebViewEnvironment()
     {
-        return envTask ??= CoreWebView2Environment.CreateAsync(null,
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                         "MarkdownViewer", "WebView2"));
+        var t = envTask;
+        // Never cache a failed attempt — a transient failure would otherwise
+        // poison every tab opened for the rest of the session.
+        if (t == null || t.IsFaulted || t.IsCanceled)
+            envTask = t = CoreWebView2Environment.CreateAsync(null,
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                             "MarkdownViewer", "WebView2"));
+        return t;
     }
 
     public const string PipeName = "MarkdownViewer-open";
@@ -1511,6 +1623,6 @@ static class App
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        Application.Run(new MainForm(args));
+        Application.Run(new MainForm(args, isFirst));
     }
 }

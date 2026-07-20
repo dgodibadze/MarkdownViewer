@@ -81,10 +81,12 @@ Markdown may contain raw HTML, so rendered documents are treated as untrusted:
 - **File ▸ Open Recent** lists the last 10 opened files, persisted in
   `UserDefaults` (`recentFiles`) and rebuilt from disk every time the menu
   opens (missing files are hidden; Clear Menu empties it). Opens also feed
-  `NSDocumentController` so the Dock icon's right-click menu matches. The
+  the OS — `NSDocumentController` on macOS (Dock right-click menu),
+  `SHAddToRecentDocs` on Windows (Explorer Quick Access / Jump List) — and
+  Clear Menu clears the OS-side entries too. The
   About window's bundled docs open as throwaway temp copies and are *not*
-  recorded. Deduplication of already-open files is case-insensitive (canonical
-  path), matching case-insensitive volumes.
+  recorded. Deduplication — of already-open files *and* of recents entries —
+  is case-insensitive (canonical path), matching case-insensitive volumes.
 
 ## Save / dirty pipeline (data-loss invariants)
 
@@ -210,7 +212,9 @@ never hardcode a color.
 
 One window per file, native tabbing preferred. Only the **first** window uses
 the frame-autosave name (multiple windows sharing one name fight over it and
-stack exactly); later windows cascade down-right. The close button shows the
+stack exactly); later windows cascade down-right. (On Windows the single
+tabbed window persists its own frame across launches, validated against the
+current monitors.) The close button shows the
 standard unsaved-changes dot (`isDocumentEdited`), the title bar carries a
 proxy icon for the open file, and markdown files can be dropped onto any
 window (a `WKWebView` subclass intercepts file drags for markdown extensions;

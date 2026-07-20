@@ -195,7 +195,22 @@ Both have caught real errors. They do not replace an actual build.
 
 ## State as of this handoff
 
-App is at **v2.0** (2026-07-20) — see `CHANGELOG.md` for release notes. v2.0
+App is at **v2.1** (2026-07-20) — see `CHANGELOG.md` for release notes. v2.1
+was a verified full-codebase bug-hunt batch: fixed Replace looping on a
+replacement containing the search term, Preview-mode checkbox toggles wiping
+the undo stack (spliceEditor now reveals the hidden editor off-screen —
+don't remove that), Edit-mode scrolling clobbering the saved scroll position,
+copy-button self-copy on raw `<pre>`, Mac recents canonical dedupe, the
+`FF FE 00 00` UTF-16LE/UTF-32LE BOM ambiguity, a quit-hang when quit stacked a
+second save panel (saveAs now queues waiters — keep that guard), a **v2.0 C#
+compile error** (`MimeType` switch missing `;` — v2.0 Windows never built!),
+WebView2 reentrant Dispose on clean-tab close (deferred via BeginInvoke),
+WebView2-runtime-missing crash + poisoned cached env task, stale tab title
+after Save As, the Windows watch timer ticking inside modal dialogs (WinForms
+timers do; NSTimer doesn't — WriteToDisk suspends it), and the second-instance
+pipe spin loop. Parity additions: Windows window-frame persistence, shell
+recents (SHAddToRecentDocs), About stays open, collect-then-save exit flow.
+v2.0
 closed the Windows-vs-Mac capability gaps found in a full audit: Windows
 drag-drop is now extension-filtered, the Windows Edit menu gained
 Undo/Redo/Cut/Copy/Paste/Delete/Select All (routed through new

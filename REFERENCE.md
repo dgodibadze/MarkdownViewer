@@ -1,7 +1,7 @@
 # MarkdownViewer — Complete Feature & Behavior Reference
 
 Exhaustive documentation of what this app actually does, on both platforms,
-as of **v2.0**. Unlike `FEATURES.md` (a stripped-down, tech-agnostic spec for
+as of **v2.1**. Unlike `FEATURES.md` (a stripped-down, tech-agnostic spec for
 rebuilding a *similar* app elsewhere), this file documents *this* app,
 including every shortcut, every menu item, and every known macOS/Windows
 difference. Source of truth: `Sources/main.swift`, `windows/Program.cs`,
@@ -10,8 +10,8 @@ difference. Source of truth: `Sources/main.swift`, `windows/Program.cs`,
 `Resources/DESIGN.md`, `Resources/ARCHITECTURE.md`, `CHANGELOG.md`.
 
 > **Compile status note**: `windows/Program.cs` has been statically reviewed
-> but **not compiled** since the v1.9 and v2.0 changes (no .NET SDK on the
-> machine used to write them). Everything below about Windows behavior is read
+> but **not compiled** since the v1.9–v2.1 changes (no .NET SDK on the
+> machine used to write them; v2.1 fixed a v2.0 compile error found in review). Everything below about Windows behavior is read
 > from source, not verified against a running build — build on Windows before
 > releasing.
 
@@ -235,7 +235,7 @@ through theme variables (`--bg --surface --text --muted --border --accent
 | Model | One `NSWindow` per document; native macOS window tabs group them; a `Window` menu lists open windows | One `MainForm`; every document is a `TabControl` tab in that single window |
 | Second top-level window | Yes — you can have N independent windows, each optionally tabbed | No — all documents live as tabs in one window |
 | Close a tab | ⌘W closes the window/tab | Ctrl+W closes the tab; middle-click on a tab header also closes it (no Mac equivalent — Mac has no middle-click-to-close since ⌘W already targets the frontmost window) |
-| Frame position | Only the first window uses the frame-autosave name (to avoid multiple windows fighting over one saved position/stacking exactly); later windows cascade down-right | N/A — single window |
+| Frame position | Only the first window uses the frame-autosave name (to avoid multiple windows fighting over one saved position/stacking exactly); later windows cascade down-right | The single window's frame persists across launches (validated against current monitors) — since v2.1 |
 | Second-launch / "Open with" routing | Handled for free via `application(_:open:)` | A named-pipe single-instance server forwards the file path into the already-running process |
 | File dropped onto window | Opens only if extension is markdown-family | Same (since v2.0) |
 
@@ -317,6 +317,13 @@ platform-convention.
 missing Windows Edit-menu commands, `.txt` hidden in the Windows Open dialog,
 modal Windows About window, non-canonical Windows recent-files dedupe.
 
+**Fixed in v2.1**: Mac recents dedupe made canonical (matching Windows);
+Windows window-frame persistence added; Windows recents mirrored to the shell
+(`SHAddToRecentDocs` — the Jump List / Quick Access analog of the Mac Dock
+menu); Windows About window stays open after opening a doc; Windows exit flow
+now collects all Save/Don't Save/Cancel answers before performing any save,
+matching the Mac quit transaction semantics.
+
 ## 12. Explicitly removed / non-existent features
 
 - **AI assistant** (chat panel, "improve selection", generate & insert,
@@ -344,7 +351,7 @@ modal Windows About window, non-canonical Windows recent-files dedupe.
 
 ## 14. Version
 
-Current: **v2.0** (2026-07-20). Versioning policy: bump `0.1` per coherent
+Current: **v2.1** (2026-07-20). Versioning policy: bump `0.1` per coherent
 release batch (not per individual fix), update
 `CFBundleShortVersionString`/`CFBundleVersion` in `Info.plist` and the
 matching Windows version, and record one dated section per release in

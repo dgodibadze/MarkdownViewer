@@ -56,7 +56,12 @@ New/blank documents open in Split mode by default.
   widget's "set full contents" API resets the undo history (many do), route
   programmatic edits through an insert/delete API instead so the native undo
   stack stays intact. This is one of the easiest things to get wrong and the
-  most annoying for a user to hit.
+  most annoying for a user to hit. Watch the *hidden-editor* case in
+  particular: if the undo-preserving edit path needs the editor focused or
+  visible (browser `execCommand` does), an edit triggered while the editor is
+  hidden — e.g. ticking a checkbox from the rendered preview — silently takes
+  the undo-destroying fallback unless you temporarily reveal the editor
+  off-screen for the edit.
 - Tab key inserts spaces (not a literal tab character) without breaking undo.
 - Word count and character count, live-updated.
 - Wrap Lines toggle.
@@ -64,6 +69,10 @@ New/blank documents open in Split mode by default.
   live match highlighting as you type, current-match emphasis distinct from
   other matches, scroll-to-current-match. Replace and Replace All are
   undo-safe (ideally Replace All is a *single* undo step, not one per match).
+  After a Replace, advance the cursor past the *end of the inserted
+  replacement*, not merely to "at/after the match start" — otherwise a
+  replacement that contains the search term (find `foo`, replace `foobar`)
+  gets re-selected forever and repeated Replace clicks corrupt the text.
   Escape closes the find bar from anywhere on the page, not just when a find
   field has focus.
 - **Zoom**: scales both the font size *and* the content column width/padding
@@ -130,6 +139,21 @@ this project's history to be worth calling out explicitly:
    shortcut, menu item) must go through the same code path. Divergent save
    implementations are how you end up with "the button doesn't work but the
    menu does" bugs.
+7. **Suspend background file-watching while a save-related dialog is open.**
+   On toolkits whose timers keep firing inside modal dialog message loops
+   (WinForms does; AppKit's default-mode timers don't), a live-reload can fire
+   *under* your "file changed on disk — overwrite?" prompt and silently swap
+   the buffer before the user's answer is applied.
+8. **Only one save dialog per document at a time.** If a second save request
+   arrives while a save panel is already up (e.g. window-close asked to save,
+   then the user hits Quit), chain the second request onto the in-flight
+   dialog's outcome instead of stacking a second dialog — a dialog queued on a
+   window that then closes may never resolve, wedging a "quit after all saves
+   finish" state machine forever.
+9. **BOM sniffing has ambiguous prefixes**: `FF FE 00 00` is both a UTF-32LE
+   BOM and a UTF-16LE BOM followed by U+0000. Try the longer interpretation
+   first, but fall back to the shorter one before declaring the file
+   undecodable — otherwise a save converts a valid file to mojibake.
 
 ## Trust / security model (markdown is untrusted input)
 

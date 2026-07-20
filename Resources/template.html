@@ -708,7 +708,19 @@ const MD = __MARKDOWN__;
       btn.innerHTML = COPY_ICON + CHECK_ICON + '<span class="copy-label">Copy</span>';
       btn.addEventListener('click', function (e) {
         e.preventDefault();
-        Promise.resolve(copyText(code.textContent)).then(function () { showCopied(btn); });
+        // A raw-HTML <pre> with no inner <code> makes `code` the <pre> itself,
+        // which contains this button — strip it from the copied text.
+        var text;
+        if (code === pre) {
+          var clone = pre.cloneNode(true);
+          clone.querySelectorAll('.copy-btn').forEach(function (b) { b.remove(); });
+          text = clone.textContent;
+        } else {
+          text = code.textContent;
+        }
+        Promise.resolve(copyText(text)).then(function (ok) {
+          if (ok !== false) showCopied(btn);   // false = both clipboard paths failed
+        });
       });
       pre.appendChild(btn);
     });
@@ -747,7 +759,21 @@ const MD = __MARKDOWN__;
   function spliceEditor(start, end, text) {
     if (start === end && !text) return;
     var prevFocus = document.activeElement;
-    if (prevFocus !== editor) editor.focus();
+    // A display:none editor (Preview mode — e.g. a task-checkbox toggle)
+    // cannot take focus, so execCommand would fail and the edit would fall
+    // into the undo-destroying value assignment below. Reveal the editor
+    // off-screen for the duration of the edit instead.
+    var revealed = false;
+    if (prevFocus !== editor) {
+      editor.focus();
+      if (document.activeElement !== editor) {
+        editor.style.position = 'fixed';
+        editor.style.left = '-200vw';
+        editor.style.display = 'block';
+        revealed = true;
+        editor.focus();
+      }
+    }
     editor.setSelectionRange(start, end);
     var ok = false;
     try {
@@ -759,6 +785,11 @@ const MD = __MARKDOWN__;
       editor.value = editor.value.slice(0, start) + text + editor.value.slice(end);
       editor.setSelectionRange(start + text.length, start + text.length);
       editor.dispatchEvent(new Event('input'));   // execCommand fires this natively
+    }
+    if (revealed) {
+      editor.style.position = '';
+      editor.style.left = '';
+      editor.style.display = '';
     }
     if (prevFocus && prevFocus !== editor && prevFocus.focus) prevFocus.focus();
   }
@@ -879,7 +910,11 @@ const MD = __MARKDOWN__;
   }
   editor.addEventListener('scroll', function () {
     syncScroll(editor, preview);
-    try { sessionStorage.setItem('scrollY', String(preview.scrollTop)); } catch (e) {}
+    // In Edit mode the preview is display:none and its scrollTop reads 0 —
+    // persisting that would clobber a previously saved preview position.
+    if (body.getAttribute('data-mode') !== 'edit') {
+      try { sessionStorage.setItem('scrollY', String(preview.scrollTop)); } catch (e) {}
+    }
   }, { passive: true });
   preview.addEventListener('scroll', function () {
     syncScroll(preview, editor);
@@ -1049,9 +1084,12 @@ const MD = __MARKDOWN__;
       var start = matches[current], end = start + findInput.value.length;
       spliceEditor(start, end, replaceInput.value);   // undo-preserving; fires input
       recompute(false);
-      // Move selection to the next match at/after the edit point.
+      // Move selection to the first match after the inserted replacement —
+      // "at/after start" would re-select a replacement containing the term
+      // (find "foo", replace "foobar" → the new "foo" matched forever).
       if (matches.length) {
-        var after = matches.findIndex(function (m) { return m >= start; });
+        var afterPos = start + replaceInput.value.length;
+        var after = matches.findIndex(function (m) { return m >= afterPos; });
         current = after === -1 ? 0 : after;
         selectCurrent();
       }
