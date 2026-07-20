@@ -1,5 +1,10 @@
 MarkdownViewer.app/
 *.dmg
+# build artifacts written beside the repo by make-dmg.sh / install.sh --dmg /
+# windows/build.ps1 -Publish (the release archive lands in windows/, not dist/)
+*.dmg.sha256
+*.zip
+*.zip.sha256
 .DS_Store
 build/
 
