@@ -45,12 +45,20 @@ columns down to a character-per-line mess instead of leaving them alone.
 `sizeTables()` (called from `render()`, after all other DOM mutations) fixes
 this: it measures every column's natural single-line width, and if the total
 exceeds the available width, every column keeps its full natural width except
-the single widest one, which is set to flex and wrap into whatever space is
-left (`table-layout: fixed` + an explicit `<colgroup>`). If even the
-non-widest columns alone don't fit, sizing gives up rather than destructively
-squeeze — the table falls back to its native horizontal scrollbar
-(`max-width: none`). GFM pipe tables never have colspan/rowspan, so
-`row.cells[i]` column indexing is safe.
+the single widest one (`canFlex` true), which is set to flex and wrap into
+whatever space is left (`table-layout: fixed` + an explicit `<colgroup>`). If
+even the non-widest columns alone don't fit (`canFlex` false), nothing flexes:
+every column gets a fixed pixel width at its natural size, every cell is
+`nowrap`, and the table's own `max-width: 100%` (from the stylesheet, left
+untouched) is deliberately **not** overridden — that's what keeps the
+resulting overflow scoped to the table's own `overflow: auto` (a scrollbar
+directly under the table) instead of forcing the whole `.preview` pane to
+scroll sideways to reach it. An earlier version of this fallback explicitly
+cleared `max-width`, which let the table bleed past `.page` and made the
+*entire* preview scroll horizontally — the scrollbar ended up far from the
+table, dragging every other column and all surrounding prose along with it.
+GFM pipe tables never have colspan/rowspan, so `row.cells[i]` column indexing
+is safe.
 
 Column widths are a function of available width and font size, so they go
 stale under anything that changes those without a full re-render: window

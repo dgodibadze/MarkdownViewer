@@ -733,8 +733,11 @@ const MD = __MARKDOWN__;
   // that squeezes short structured columns (dates, ids) down to a
   // character-per-line mess instead of leaving them alone. Here, every
   // column gets its full single-line natural width except the single widest
-  // one, which absorbs whatever space is left over and wraps. GFM pipe
-  // tables never have colspan/rowspan, so row.cells[i] indexing is safe.
+  // one, which absorbs whatever space is left over and wraps. If even the
+  // non-widest columns don't fit together, nothing flexes — every column
+  // stays at its natural width and the table scrolls within itself (see
+  // `canFlex` below). GFM pipe tables never have colspan/rowspan, so
+  // row.cells[i] indexing is safe.
   function sizeTables(root) {
     if (!root.clientWidth) return;   // hidden (e.g. Edit mode) — nothing to measure
     root.querySelectorAll('table').forEach(function (table) {
@@ -772,22 +775,28 @@ const MD = __MARKDOWN__;
       var flexIndex = 0;
       for (var i = 1; i < colCount; i++) if (colWidth[i] > colWidth[flexIndex]) flexIndex = i;
       var fixedSum = natural - colWidth[flexIndex];
-      if (fixedSum >= available) {
-        // Even without the flex column the rest don't fit — no honest way to
-        // prioritize; let the table overflow and scroll instead of squeezing.
-        table.style.maxWidth = 'none';
-        return;
-      }
+      var canFlex = fixedSum < available;
+      // canFlex === false: even without the flex column the rest don't fit —
+      // no honest way to prioritize one column, so EVERY column keeps its
+      // natural width (all nowrap) and the table's own untouched max-width
+      // clamp + overflow:auto (from the stylesheet) give it a scrollbar
+      // scoped to the table itself. Explicitly setting table.style.maxWidth
+      // here would instead let the table bleed past its container, forcing
+      // the *whole* .preview pane to scroll horizontally to reach it — that
+      // buries the scrollbar far from the table and drags every other column
+      // and all surrounding prose sideways with it.
 
-      for (var r3 = 0; r3 < rows.length; r3++) {
-        var flexCell = rows[r3].cells[flexIndex];
-        if (flexCell) flexCell.style.whiteSpace = 'normal';
+      if (canFlex) {
+        for (var r3 = 0; r3 < rows.length; r3++) {
+          var flexCell = rows[r3].cells[flexIndex];
+          if (flexCell) flexCell.style.whiteSpace = 'normal';
+        }
       }
       var colgroup = document.createElement('colgroup');
       colgroup.setAttribute('data-mdv-sized', '');
       for (var i2 = 0; i2 < colCount; i2++) {
         var col = document.createElement('col');
-        if (i2 !== flexIndex) col.style.width = Math.ceil(colWidth[i2]) + 'px';
+        if (!(canFlex && i2 === flexIndex)) col.style.width = Math.ceil(colWidth[i2]) + 'px';
         colgroup.appendChild(col);
       }
       table.insertBefore(colgroup, table.firstChild);

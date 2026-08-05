@@ -18,9 +18,12 @@ Versions bump by 0.1 per release batch.
   every column at its natural width except the single widest one, which
   flexes and wraps to absorb whatever space is left. Recomputed on window
   resize, zoom, and split-drag since column widths depend on both available
-  width and font size. Falls back to a horizontally scrollable table (its
-  native behavior) rather than squeezing further if even the non-widest
-  columns don't fit on their own.
+  width and font size. If even the non-widest columns don't fit on their own,
+  every column keeps its natural width instead and the table scrolls
+  **within itself** — a scrollbar directly under the table, not a scroll on
+  the whole preview pane (an early version of this fallback cleared the
+  table's `max-width`, which let it bleed past the page and forced the
+  entire document to scroll sideways to reach the last column).
 
 ## [2.1] — 2026-07-20
 
