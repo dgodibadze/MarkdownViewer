@@ -5,6 +5,23 @@ All notable changes to MarkdownViewer are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions bump by 0.1 per release batch.
 
+## [2.2] — 2026-08-05
+
+### Fixed — shared template (both platforms)
+
+- **Wide tables squeezed short columns into a wrap-mess.** Default auto table
+  layout shrinks every column proportionally once the widest column bottoms
+  out at its min-content width — a table mixing short structured cells
+  (dates, ids) with a long prose column crushed the short columns down to a
+  character-per-line mess. `sizeTables()` now measures each column's natural
+  single-line width after every render and, when the table doesn't fit, keeps
+  every column at its natural width except the single widest one, which
+  flexes and wraps to absorb whatever space is left. Recomputed on window
+  resize, zoom, and split-drag since column widths depend on both available
+  width and font size. Falls back to a horizontally scrollable table (its
+  native behavior) rather than squeezing further if even the non-widest
+  columns don't fit on their own.
+
 ## [2.1] — 2026-07-20
 
 Full-codebase bug-hunt release: three independent review passes (Swift shell,
