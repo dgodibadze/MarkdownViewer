@@ -414,6 +414,7 @@ const MD = __MARKDOWN__;
     var mathReady = renderMath(text);
     wireTaskCheckboxes(content);
     buildTOC(content);
+    sizeTables(content);
     updateCount(text);
     return Promise.all([mermaidReady, mathReady]);
   }
@@ -731,6 +732,74 @@ const MD = __MARKDOWN__;
     });
   }
 
+  // ---- Table column sizing ----
+  // Default auto table layout shrinks EVERY column proportionally once the
+  // widest (most-wrappable) column bottoms out at its min-content width —
+  // that squeezes short structured columns (dates, ids) down to a
+  // character-per-line mess instead of leaving them alone. Here, every
+  // column gets its full single-line natural width except the single widest
+  // one, which absorbs whatever space is left over and wraps. GFM pipe
+  // tables never have colspan/rowspan, so row.cells[i] indexing is safe.
+  function sizeTables(root) {
+    if (!root.clientWidth) return;   // hidden (e.g. Edit mode) — nothing to measure
+    root.querySelectorAll('table').forEach(function (table) {
+      var oldColgroup = table.querySelector('colgroup[data-mdv-sized]');
+      if (oldColgroup) oldColgroup.remove();
+      table.style.tableLayout = '';
+      table.style.maxWidth = '';
+      var cells = table.querySelectorAll('th,td');
+      cells.forEach(function (c) { c.style.whiteSpace = ''; });
+
+      var rows = table.rows;
+      if (!rows.length) return;
+      var colCount = 0;
+      for (var r = 0; r < rows.length; r++) colCount = Math.max(colCount, rows[r].cells.length);
+      if (colCount < 2) return;   // nothing to prioritize with a single column
+
+      // Force single-line so each cell reports its true natural width.
+      cells.forEach(function (c) { c.style.whiteSpace = 'nowrap'; });
+      var colWidth = new Array(colCount).fill(0);
+      for (var r2 = 0; r2 < rows.length; r2++) {
+        var rowCells = rows[r2].cells;
+        for (var c2 = 0; c2 < rowCells.length; c2++) {
+          var w = rowCells[c2].getBoundingClientRect().width;
+          if (w > colWidth[c2]) colWidth[c2] = w;
+        }
+      }
+
+      var available = table.parentElement.clientWidth;
+      var natural = colWidth.reduce(function (a, b) { return a + b; }, 0);
+      if (natural <= available) {
+        cells.forEach(function (c) { c.style.whiteSpace = ''; });   // already fits — leave default layout alone
+        return;
+      }
+
+      var flexIndex = 0;
+      for (var i = 1; i < colCount; i++) if (colWidth[i] > colWidth[flexIndex]) flexIndex = i;
+      var fixedSum = natural - colWidth[flexIndex];
+      if (fixedSum >= available) {
+        // Even without the flex column the rest don't fit — no honest way to
+        // prioritize; let the table overflow and scroll instead of squeezing.
+        table.style.maxWidth = 'none';
+        return;
+      }
+
+      for (var r3 = 0; r3 < rows.length; r3++) {
+        var flexCell = rows[r3].cells[flexIndex];
+        if (flexCell) flexCell.style.whiteSpace = 'normal';
+      }
+      var colgroup = document.createElement('colgroup');
+      colgroup.setAttribute('data-mdv-sized', '');
+      for (var i2 = 0; i2 < colCount; i2++) {
+        var col = document.createElement('col');
+        if (i2 !== flexIndex) col.style.width = Math.ceil(colWidth[i2]) + 'px';
+        colgroup.appendChild(col);
+      }
+      table.insertBefore(colgroup, table.firstChild);
+      table.style.tableLayout = 'fixed';
+    });
+  }
+
   // ---- Dirty state ----
   // The Save button stays enabled even when clean — clicking it re-writes the
   // same bytes (harmless) or, for Untitled, opens the save panel. Gating it on
@@ -837,6 +906,16 @@ const MD = __MARKDOWN__;
     if (document.activeElement !== editor) editor.focus();
     try { document.execCommand(name, false, null); } catch (e) {}
   };
+
+  // Column widths depend on available width and font metrics, so recompute
+  // (without a full re-render) whenever either can change: window resize
+  // and zoom. Debounced — both can fire in a burst.
+  var tableSizeTimer = null;
+  function scheduleTableResize() {
+    clearTimeout(tableSizeTimer);
+    tableSizeTimer = setTimeout(function () { sizeTables(content); }, 120);
+  }
+  window.addEventListener('resize', scheduleTableResize);
 
   // ---- Editing ----
   var renderTimer = null, changeTimer = null;
@@ -985,11 +1064,13 @@ const MD = __MARKDOWN__;
       if (!dragging) return;
       dragging = false;
       body.classList.remove('col-resizing');
+      sizeTables(content);
     });
     // Double-click the gutter to reset to a 50/50 split.
     gutter.addEventListener('dblclick', function () {
       workspace.style.setProperty('--split', '50%');
       try { localStorage.setItem('splitRatio', '50%'); } catch (e) {}
+      sizeTables(content);
     });
   })();
 
@@ -1261,6 +1342,7 @@ const MD = __MARKDOWN__;
     function apply(v) {
       document.documentElement.style.setProperty('--zoom', String(v));
       try { localStorage.setItem(KEY, String(v)); } catch (e) {}
+      scheduleTableResize();   // column widths are font-size dependent
     }
     function bump(d) { apply(clamp(get() + d)); }
     // Exposed for the native View menu items (the keyboard shortcuts below
