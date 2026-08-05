@@ -36,6 +36,29 @@ built that way, so changes don't quietly break the invariants.
    example task syntax in a code fence), checkboxes stay disabled rather than
    guess.
 
+### Table column sizing
+
+Default auto table layout shrinks *every* column proportionally once the
+widest column bottoms out at its min-content width — for a table mixing short
+structured cells (dates, ids) with long prose, that squeezes the short
+columns down to a character-per-line mess instead of leaving them alone.
+`sizeTables()` (called from `render()`, after all other DOM mutations) fixes
+this: it measures every column's natural single-line width, and if the total
+exceeds the available width, every column keeps its full natural width except
+the single widest one, which is set to flex and wrap into whatever space is
+left (`table-layout: fixed` + an explicit `<colgroup>`). If even the
+non-widest columns alone don't fit, sizing gives up rather than destructively
+squeeze — the table falls back to its native horizontal scrollbar
+(`max-width: none`). GFM pipe tables never have colspan/rowspan, so
+`row.cells[i]` column indexing is safe.
+
+Column widths are a function of available width and font size, so they go
+stale under anything that changes those without a full re-render: window
+resize and zoom both call a debounced `scheduleTableResize()`, and ending a
+split-gutter drag calls `sizeTables()` directly. A table that already fits
+is left with default auto layout — no inline styles or `<colgroup>` are
+added — so this only engages for tables that would otherwise wrap badly.
+
 ## Security model
 
 Markdown may contain raw HTML, so rendered documents are treated as untrusted:
