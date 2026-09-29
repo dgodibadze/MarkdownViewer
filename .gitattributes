@@ -7,3 +7,10 @@
 # Treat them as binary so Git never rewrites line endings or reports upstream
 # minifier whitespace as a source-formatting error.
 Resources/*.min.js binary
+
+# Everything build.ps1 checksums must arrive byte-identical on Windows, where
+# Git for Windows defaults to core.autocrlf=true and would otherwise rewrite it.
+Resources/*.css -text
+Resources/SHA256SUMS -text
+Resources/fonts/* binary
+windows/Resources/* -text

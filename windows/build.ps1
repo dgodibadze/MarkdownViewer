@@ -1,8 +1,9 @@
 # Builds MarkdownViewer for Windows.
 #   .\build.ps1            -> Release build in bin\Release\net8.0-windows
 #   .\build.ps1 -Publish   -> self-contained single-folder publish in .\dist
-# Requires the .NET 8 SDK (winget install Microsoft.DotNet.SDK.8), Python 3,
-# and internet on the first build (to restore WebView2, cached afterward).
+# Requires the .NET 8 SDK (winget install Microsoft.DotNet.SDK.8) and internet
+# on the first build (to restore WebView2, cached afterward). Python 3 is
+# optional: it only re-syncs the generated template, which is committed.
 param([switch]$Publish)
 
 $ErrorActionPreference = 'Stop'
@@ -11,11 +12,21 @@ $root = Split-Path $PSScriptRoot -Parent
 
 # Keep the generated Windows page in lockstep with the canonical Mac template.
 $regen = Join-Path $PSScriptRoot 'regen-template.py'
-if (Get-Command python3 -ErrorAction SilentlyContinue) { & python3 $regen }
-elseif (Get-Command py -ErrorAction SilentlyContinue) { & py -3 $regen }
-elseif (Get-Command python -ErrorAction SilentlyContinue) { & python $regen }
-else { throw 'Python 3 is required to regenerate windows\Resources\template.html.' }
-if ($LASTEXITCODE -ne 0) { throw 'Windows template regeneration failed.' }
+$python = $null
+foreach ($cand in @(@('python3'), @('py', '-3'), @('python'))) {
+    if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
+    # The Microsoft Store "python3" stub exists on PATH but fails to run.
+    $extra = @($cand | Select-Object -Skip 1)
+    & $cand[0] @extra -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' 2>$null
+    if ($LASTEXITCODE -eq 0) { $python = $cand; break }
+}
+if ($python) {
+    $extra = @($python | Select-Object -Skip 1)
+    & $python[0] @extra $regen
+    if ($LASTEXITCODE -ne 0) { throw 'Windows template regeneration failed.' }
+} else {
+    Write-Host 'Python 3 not found; using the committed windows\Resources\template.html (CI keeps it in sync).'
+}
 
 # Refuse to build with modified/corrupt vendored renderer assets.
 $manifest = Join-Path $root 'Resources\SHA256SUMS'

@@ -1,7 +1,8 @@
 # MarkdownViewer one-line installer for Windows.
 #   irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/main/install.ps1 | iex
 #   $env:MARKDOWNVIEWER_REF='dev'; irm https://raw.githubusercontent.com/dgodibadze/MarkdownViewer/dev/install.ps1 | iex
-# Downloads the latest self-contained release, installs it to
+# Downloads the latest self-contained release (or, if none is published,
+# builds `main` from source), installs it to
 # %LOCALAPPDATA%\Programs\MarkdownViewer, ensures the WebView2 Runtime is
 # present, and creates a Start Menu shortcut. No admin rights needed.
 $ErrorActionPreference = 'Stop'
@@ -24,18 +25,23 @@ $dest = Join-Path $env:LOCALAPPDATA 'Programs\MarkdownViewer'
 $downloadId = [Guid]::NewGuid().ToString('N')
 $zip = $null
 $sourceRoot = $null
+$srcExtract = $null
 
 if (-not $installFromSource) {
+    $release = $null
     try {
         $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
-    } catch {
-        throw "No published release found for $repo yet. Build from source instead: clone the repo and run windows\build.ps1 (needs the .NET 8 SDK)."
-    }
-    $asset = $release.assets | Where-Object { $_.name -match 'windows.*\.zip$' } | Select-Object -First 1
+    } catch {}
+    $asset = $null
+    if ($release) { $asset = $release.assets | Where-Object { $_.name -match 'windows.*\.zip$' } | Select-Object -First 1 }
     if (-not $asset) {
-        throw "The latest release has no Windows .zip asset. Build from source instead: clone the repo and run windows\build.ps1 (needs the .NET 8 SDK)."
+        Write-Host "No published Windows release found for $repo; building 'main' from source instead."
+        $installRef = 'main'
+        $installFromSource = $true
     }
+}
 
+if (-not $installFromSource) {
     $zip = Join-Path $env:TEMP "MarkdownViewer-windows-$downloadId.zip"
     Write-Host "Downloading $($asset.name) ($([math]::Round($asset.size / 1MB)) MB)..."
     Invoke-WebRequest $asset.browser_download_url -OutFile $zip
@@ -65,10 +71,32 @@ if (-not $installFromSource) {
         throw 'Release ZIP checksum verification failed.'
     }
 } else {
-    $sourceRoot = Join-Path $env:TEMP "MarkdownViewer-source-$downloadId"
-    Write-Host "Cloning $installRef and building the Windows app (needs the .NET 8 SDK)..."
-    git clone --depth 1 --branch $installRef "https://github.com/$repo.git" $sourceRoot
-    if ($LASTEXITCODE -ne 0) { throw "Could not clone $repo ref '$installRef'." }
+    # .NET 8 SDK (installed per-machine via winget if missing). Git is not needed.
+    function Test-Sdk8 {
+        $dn = Get-Command dotnet -ErrorAction SilentlyContinue
+        if (-not $dn) { return $false }
+        return [bool](& dotnet --list-sdks 2>$null | Where-Object { $_ -match '^8\.' })
+    }
+    if (-not (Test-Sdk8)) {
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            throw 'The .NET 8 SDK is required to build from source and winget is not available. Install it from https://dotnet.microsoft.com/download/dotnet/8.0 and run this again.'
+        }
+        Write-Host 'Installing the .NET 8 SDK (one-time)...'
+        winget install --id Microsoft.DotNet.SDK.8 -e --silent --accept-package-agreements --accept-source-agreements
+        $env:PATH = "$env:ProgramFiles\dotnet;$env:PATH"
+        if (-not (Test-Sdk8)) { throw 'The .NET 8 SDK install did not complete. Install it manually, open a new PowerShell, and run this again.' }
+    }
+
+    $srcZip = Join-Path $env:TEMP "MarkdownViewer-source-$downloadId.zip"
+    $srcExtract = Join-Path $env:TEMP "MarkdownViewer-source-$downloadId"
+    Write-Host "Downloading source for '$installRef'..."
+    Invoke-WebRequest "https://github.com/$repo/archive/$installRef.zip" -OutFile $srcZip
+    Expand-Archive $srcZip $srcExtract -Force
+    Remove-Item $srcZip -ErrorAction SilentlyContinue
+    $sourceRoot = (Get-ChildItem $srcExtract -Directory | Select-Object -First 1).FullName
+    if (-not $sourceRoot -or -not (Test-Path (Join-Path $sourceRoot 'windows\build.ps1'))) {
+        throw "Downloaded source for '$installRef' does not contain windows\build.ps1."
+    }
     Push-Location (Join-Path $sourceRoot 'windows')
     try {
         & .\build.ps1 -Publish
@@ -130,7 +158,7 @@ try {
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue }
     if ($activated -and (Test-Path $backup)) { Remove-Item $backup -Recurse -Force -ErrorAction SilentlyContinue }
     if ($zip) { Remove-Item $zip -ErrorAction SilentlyContinue }
-    if ($sourceRoot -and (Test-Path $sourceRoot)) { Remove-Item $sourceRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($srcExtract -and (Test-Path $srcExtract)) { Remove-Item $srcExtract -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 # WebView2 Runtime (preinstalled on Windows 11; install silently if missing).
