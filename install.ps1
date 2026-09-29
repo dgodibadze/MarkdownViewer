@@ -21,6 +21,10 @@ if ($installFromSource) {
     Write-Host "Installing MarkdownViewer..."
 }
 
+# Native architecture (a 32-bit PowerShell on 64-bit Windows reports x86 here).
+$osArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$arch = if ($osArch -eq 'ARM64') { 'arm64' } else { 'x64' }
+
 $dest = Join-Path $env:LOCALAPPDATA 'Programs\MarkdownViewer'
 $downloadId = [Guid]::NewGuid().ToString('N')
 $zip = $null
@@ -33,7 +37,13 @@ if (-not $installFromSource) {
         $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
     } catch {}
     $asset = $null
-    if ($release) { $asset = $release.assets | Where-Object { $_.name -match 'windows.*\.zip$' } | Select-Object -First 1 }
+    if ($release) {
+        $asset = $release.assets | Where-Object { $_.name -match "windows-$arch\.zip$" } | Select-Object -First 1
+        if (-not $asset -and $arch -eq 'arm64') {
+            Write-Host 'No native ARM64 build in this release; using the x64 build (runs under emulation).'
+            $asset = $release.assets | Where-Object { $_.name -match 'windows-x64\.zip$' } | Select-Object -First 1
+        }
+    }
     if (-not $asset) {
         Write-Host "No published Windows release found for $repo; building 'main' from source instead."
         $installRef = 'main'
@@ -97,9 +107,15 @@ if (-not $installFromSource) {
     if (-not $sourceRoot -or -not (Test-Path (Join-Path $sourceRoot 'windows\build.ps1'))) {
         throw "Downloaded source for '$installRef' does not contain windows\build.ps1."
     }
+    # Building runs windows\build.ps1, a script file. Fail early with the fix
+    # instead of a cryptic SecurityError after the SDK download.
+    $policy = Get-ExecutionPolicy
+    if ($policy -in 'Restricted', 'AllSigned') {
+        throw "PowerShell's execution policy ($policy) blocks the build script. In this window run:`n  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`nthen paste the install command again (it only affects this window). Or skip building and use the release ZIP."
+    }
     Push-Location (Join-Path $sourceRoot 'windows')
     try {
-        & .\build.ps1 -Publish
+        & .\build.ps1 -Publish -Arch $arch
         if ($LASTEXITCODE -ne 0) { throw 'Windows source build failed.' }
     } finally {
         Pop-Location

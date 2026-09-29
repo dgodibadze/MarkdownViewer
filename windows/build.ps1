@@ -1,10 +1,11 @@
 # Builds MarkdownViewer for Windows.
 #   .\build.ps1            -> Release build in bin\Release\net8.0-windows
-#   .\build.ps1 -Publish   -> self-contained single-folder publish in .\dist
+#   .\build.ps1 -Publish   -> self-contained single-file publish in .\dist
+#   .\build.ps1 -Publish -Arch arm64   -> same, for Windows on ARM (default x64)
 # Requires the .NET 8 SDK (winget install Microsoft.DotNet.SDK.8) and internet
 # on the first build (to restore WebView2, cached afterward). Python 3 is
 # optional: it only re-syncs the generated template, which is committed.
-param([switch]$Publish)
+param([switch]$Publish, [ValidateSet('x64', 'arm64')][string]$Arch = 'x64')
 
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -44,9 +45,9 @@ foreach ($line in Get-Content $manifest) {
 if ($Publish) {
     $dist = Join-Path $PSScriptRoot 'dist'
     if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
-    dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $dist
+    dotnet publish -c Release -r win-$Arch --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $dist
     if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
-    $zip = Join-Path $PSScriptRoot 'MarkdownViewer-windows-x64.zip'
+    $zip = Join-Path $PSScriptRoot "MarkdownViewer-windows-$Arch.zip"
     Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip -Force
     $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $(Split-Path $zip -Leaf)" | Set-Content "$zip.sha256" -Encoding ascii
