@@ -65,3 +65,34 @@ jobs:
             windows/MarkdownViewer-windows-x64.zip `
             windows/MarkdownViewer-windows-x64.zip.sha256 `
             --title "${{ github.ref_name }}" --notes-file CHANGELOG.md
+
+  install-smoke:
+    # Runs the real one-line installer (Windows PowerShell 5.1, like a user's
+    # console) against this branch and launches the installed app.
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install.ps1 (source build of this ref)
+        shell: powershell
+        env:
+          MARKDOWNVIEWER_REF: ${{ github.ref_name }}
+        run: ./install.ps1
+
+      - name: Installed app launches and stays up
+        shell: powershell
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\MarkdownViewer'
+          foreach ($f in 'MarkdownViewer.exe', 'Resources\template.html') {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "Missing after install: $f" }
+          }
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'MarkdownViewer.lnk'
+          if (-not (Test-Path $lnk)) { throw 'Start Menu shortcut missing' }
+          $md = Join-Path $env:RUNNER_TEMP 'smoke.md'
+          Set-Content $md "# Smoke test`n`n| a | b |`n|---|---|`n| 1 | 2 |"
+          $p = Start-Process (Join-Path $dir 'MarkdownViewer.exe') -ArgumentList "`"$md`"" -PassThru
+          Start-Sleep -Seconds 15
+          if ($p.HasExited) { throw "MarkdownViewer exited early with code $($p.ExitCode)" }
+          Write-Host "Running after 15s: pid $($p.Id), window title '$($p.MainWindowTitle)'"
+          Stop-Process $p -Force

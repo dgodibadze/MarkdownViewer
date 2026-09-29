@@ -44,7 +44,7 @@ foreach ($line in Get-Content $manifest) {
 if ($Publish) {
     $dist = Join-Path $PSScriptRoot 'dist'
     if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
-    dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $dist
+    dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $dist
     if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
     $zip = Join-Path $PSScriptRoot 'MarkdownViewer-windows-x64.zip'
     Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip -Force
