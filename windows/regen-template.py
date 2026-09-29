@@ -17,7 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "Resources" / "template.html"
 DST = ROOT / "windows" / "Resources" / "template.html"
 
-src = SRC.read_text(encoding="utf-8")
+src = SRC.read_bytes().decode("utf-8").replace("\r\n", "\n")
 
 # WebView2 serves the same narrowly scoped directories through virtual HTTPS
 # hosts instead of WKWebView's custom URL schemes.
@@ -125,5 +125,5 @@ sub("""    function close() { bar.hidden = true; backdrop.innerHTML = ''; editor
     // the page, so the native side calls this hook to close the find bar.
     window.__escape = function () { if (!bar.hidden) close(); };""")
 
-DST.write_text(src, encoding="utf-8")
+DST.write_bytes(src.encode("utf-8"))  # bytes: never let Windows write CRLF
 print(f"regenerated {DST} ({len(src)} bytes)")

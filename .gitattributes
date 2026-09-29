@@ -13,4 +13,5 @@ Resources/*.min.js binary
 Resources/*.css -text
 Resources/SHA256SUMS -text
 Resources/fonts/* binary
+Resources/template.html -text
 windows/Resources/* -text
