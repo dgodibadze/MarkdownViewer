@@ -1,9 +1,11 @@
 # Builds MarkdownViewer for Windows.
 #   .\build.ps1            -> Release build in bin\Release\net8.0-windows
-#   .\build.ps1 -Publish   -> self-contained single-folder publish in .\dist
-# Requires the .NET 8 SDK (winget install Microsoft.DotNet.SDK.8), Python 3,
-# and internet on the first build (to restore WebView2, cached afterward).
-param([switch]$Publish)
+#   .\build.ps1 -Publish   -> self-contained single-file publish in .\dist
+#   .\build.ps1 -Publish -Arch arm64   -> same, for Windows on ARM (default x64)
+# Requires the .NET 8 SDK (winget install Microsoft.DotNet.SDK.8) and internet
+# on the first build (to restore WebView2, cached afterward). Python 3 is
+# optional: it only re-syncs the generated template, which is committed.
+param([switch]$Publish, [ValidateSet('x64', 'arm64')][string]$Arch = 'x64')
 
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -11,11 +13,21 @@ $root = Split-Path $PSScriptRoot -Parent
 
 # Keep the generated Windows page in lockstep with the canonical Mac template.
 $regen = Join-Path $PSScriptRoot 'regen-template.py'
-if (Get-Command python3 -ErrorAction SilentlyContinue) { & python3 $regen }
-elseif (Get-Command py -ErrorAction SilentlyContinue) { & py -3 $regen }
-elseif (Get-Command python -ErrorAction SilentlyContinue) { & python $regen }
-else { throw 'Python 3 is required to regenerate windows\Resources\template.html.' }
-if ($LASTEXITCODE -ne 0) { throw 'Windows template regeneration failed.' }
+$python = $null
+foreach ($cand in @(@('python3'), @('py', '-3'), @('python'))) {
+    if (-not (Get-Command $cand[0] -ErrorAction SilentlyContinue)) { continue }
+    # The Microsoft Store "python3" stub exists on PATH but fails to run.
+    $extra = @($cand | Select-Object -Skip 1)
+    & $cand[0] @extra -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' 2>$null
+    if ($LASTEXITCODE -eq 0) { $python = $cand; break }
+}
+if ($python) {
+    $extra = @($python | Select-Object -Skip 1)
+    & $python[0] @extra $regen
+    if ($LASTEXITCODE -ne 0) { throw 'Windows template regeneration failed.' }
+} else {
+    Write-Host 'Python 3 not found; using the committed windows\Resources\template.html (CI keeps it in sync).'
+}
 
 # Refuse to build with modified/corrupt vendored renderer assets.
 $manifest = Join-Path $root 'Resources\SHA256SUMS'
@@ -33,9 +45,9 @@ foreach ($line in Get-Content $manifest) {
 if ($Publish) {
     $dist = Join-Path $PSScriptRoot 'dist'
     if (Test-Path $dist) { Remove-Item $dist -Recurse -Force }
-    dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o $dist
+    dotnet publish -c Release -r win-$Arch --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -o $dist
     if ($LASTEXITCODE -ne 0) { throw 'dotnet publish failed.' }
-    $zip = Join-Path $PSScriptRoot 'MarkdownViewer-windows-x64.zip'
+    $zip = Join-Path $PSScriptRoot "MarkdownViewer-windows-$Arch.zip"
     Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $zip -Force
     $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $(Split-Path $zip -Leaf)" | Set-Content "$zip.sha256" -Encoding ascii

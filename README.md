@@ -117,7 +117,32 @@ working copy:
 - **macOS** installs to **`/Applications/MarkdownViewer.app`** (latest DMG from
   [Releases](../../releases), or built from source if none is published).
 - **Windows** installs to **`%LOCALAPPDATA%\Programs\MarkdownViewer`**, adds a
-  Start Menu shortcut, and fetches the WebView2 Runtime if it's missing.
+  Start Menu shortcut, and fetches the WebView2 Runtime if it's missing. It
+  picks the native build for your CPU (x64 or ARM64) from the latest
+  [Release](../../releases); if none is published it builds `main` from source
+  (installing the .NET 8 SDK through `winget` if needed).
+
+**Windows without PowerShell scripts** — download `MarkdownViewer-windows-x64.zip`
+(or `-arm64.zip` on Windows on ARM) from [Releases](../../releases), extract it,
+and run `MarkdownViewer.exe`. No SDK and no execution-policy change needed. The
+matching `.sha256` file is next to it.
+
+<details>
+<summary><b>Windows troubleshooting</b></summary>
+
+- **"running scripts is disabled" / `UnauthorizedAccess`** — the source-build
+  path runs `windows\build.ps1`, and PowerShell's default `Restricted` policy
+  blocks script files. In that window only, run
+  `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` and paste the
+  install command again. It affects just that window. If your organization
+  enforces the policy (group policy / Intune) this is refused: use the release
+  ZIP above instead.
+- **Windows on ARM** — release installs use the native ARM64 build. A source
+  build also targets ARM64 there.
+- **Blank window** — the WebView2 Runtime is missing; the installer adds it,
+  or install it from Microsoft.
+
+</details>
 
 <details>
 <summary><b>Manual install & building from source</b></summary>
@@ -185,7 +210,7 @@ shared, bundled HTML template, talking to it over a small message bridge:
 |---|---|---|
 | Shell | `Sources/main.swift` (AppKit) | `windows/Program.cs` (WinForms) |
 | Web view | WKWebView | WebView2 |
-| Binary | Universal (arm64 + x86_64) | win-x64, single file |
+| Binary | Universal (arm64 + x86_64) | win-x64 and win-arm64, single file |
 
 The full design — rendering pipeline, save/dirty invariants, security model,
 scroll-sync approach — is documented in

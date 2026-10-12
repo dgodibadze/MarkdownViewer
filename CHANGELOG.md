@@ -7,6 +7,24 @@ Versions bump by 0.1 per release batch.
 
 ## [2.2] — 2026-08-05
 
+### Fixed — Windows install
+
+- **The Windows one-liner failed with "No published release found".** No
+  release existed, and nothing built one. CI now builds and validates the
+  Windows bundle for x64 and ARM64 on every push and, on a `v*` tag, publishes
+  both ZIPs with SHA-256 files as a GitHub Release. Tags containing `-` are
+  prereleases.
+- **`install.ps1`** falls back to a source build of `main` when no release
+  exists, downloads the source archive instead of needing Git, installs the
+  .NET 8 SDK through `winget` when missing, chooses the x64 or ARM64 build for
+  the machine, and explains a blocking PowerShell execution policy up front.
+- **`build.ps1`** no longer requires Python (the generated template is
+  committed) and ignores the Microsoft Store `python3` stub. The template
+  regenerator no longer writes CRLF on Windows.
+- **`.gitattributes`** stops Git for Windows from converting line endings of
+  files that are verified against `Resources/SHA256SUMS`.
+- Single-file publish is compressed (154 MB to 68 MB per exe).
+
 ### Fixed — shared template (both platforms)
 
 - **Wide tables squeezed short columns into a wrap-mess.** Default auto table
